@@ -1,0 +1,35 @@
+{
+  "name": "marcaje",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "web"
+  ],
+  "scripts": {
+    "dev:api": "tsx watch --env-file=.env scripts/dev-server.ts",
+    "dev:web": "npm run dev -w web",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json && npm run typecheck -w web",
+    "build:web": "npm run build -w web",
+    "seed": "tsx --env-file=.env scripts/seed.ts",
+    "db:push": "supabase db push",
+    "deploy:api": "supabase functions deploy api --no-verify-jwt",
+    "deploy:web": "npm run build:web && npx wrangler@4 pages deploy web/dist --project-name marcaje --branch main"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.15",
+    "@hono/node-server": "^1.19.18",
+    "@types/node": "^20.19.43",
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9",
+    "ws": "^8.22.1"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.109.0",
+    "hono": "^4.13.16",
+    "zod": "^3.25.76"
+  }
+}
