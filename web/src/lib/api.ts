@@ -158,6 +158,12 @@ export interface PunchResult {
   message?: string;
 }
 
+export interface PinRequest {
+  id: string;
+  createdAt: string;
+  employee: { id: string; name: string; cedula: string };
+}
+
 export interface PunchConflict {
   id: string;
   employeeId: string;
@@ -182,6 +188,7 @@ export const api = {
   register: (body: { companyName: string; adminName: string; email: string; password: string }) =>
     request<{ company: Company }>("POST", "/register", body),
   session: () => request<SessionInfo>("GET", "/session"),
+  requestPin: (body: { companyCode: string; cedula: string }) => request<{ ok: true }>("POST", "/pin-requests", body),
 
   // colaborador
   myToday: () => request<EmployeeToday>("GET", "/me/today"),
@@ -201,6 +208,8 @@ export const api = {
     request<{ shift: Shift }>("POST", "/admin/shifts", body),
   correctShift: (id: string, body: { clockIn: string; clockOut: string | null; reason: string }) =>
     request<{ shift: Shift }>("PATCH", `/admin/shifts/${id}`, body),
+  pinRequests: () => request<{ requests: PinRequest[] }>("GET", "/admin/pin-requests"),
+  dismissPinRequest: (id: string) => request<{ ok: true }>("POST", `/admin/pin-requests/${id}/dismiss`),
   reviewQueue: () => request<{ shifts: Shift[]; conflicts: PunchConflict[] }>("GET", "/admin/review-queue"),
   dismissConflict: (id: string) => request<{ ok: true }>("POST", `/admin/punch-conflicts/${id}/dismiss`),
   report: (from: string, to: string) => request<PeriodReport>("GET", `/admin/report?${qs({ from, to })}`),

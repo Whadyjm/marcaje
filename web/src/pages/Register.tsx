@@ -54,6 +54,7 @@ export function Register() {
           </label>
           <ErrorBanner error={error} />
           <button className="btn btn-primary btn-block" disabled={busy}>
+            {busy && <span className="btn-spinner" aria-hidden />}
             {busy ? "Creando…" : "Crear empresa"}
           </button>
         </form>

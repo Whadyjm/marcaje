@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { Logo } from "../components/Logo";
 import { ErrorBanner } from "../components/ui";
+import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 
 function stored(key: string): string {
@@ -16,7 +17,7 @@ const PIN_LENGTH = 6;
 
 export function Login() {
   const { code: codeParam } = useParams();
-  const { info, error: authError, loginAdmin, loginEmployee } = useAuth();
+  const { session, info, error: authError, loginAdmin, loginEmployee } = useAuth();
   const [mode, setMode] = useState<"employee" | "admin">("employee");
   const [code, setCode] = useState((codeParam ?? stored("marcaje.companyCode")).toUpperCase());
   // Si ya conocemos la empresa (enlace o visita anterior) no se la volvemos a pedir.
@@ -27,6 +28,8 @@ export function Login() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [requesting, setRequesting] = useState(false);
+  const [requested, setRequested] = useState(false);
 
   useEffect(() => {
     if (codeParam) {
@@ -37,6 +40,28 @@ export function Login() {
   }, [codeParam]);
 
   if (info) return <Navigate to={info.role === "admin" ? "/admin" : "/marcar"} replace />;
+
+  // Validar las credenciales no es entrar: falta consultar el rol, y con mala señal tarda.
+  const entering = busy || (!!session && !authError);
+
+  async function requestPin() {
+    setError(null);
+    setRequested(false);
+    if (!code.trim() || !cedula.trim()) {
+      setEditingCode(!code.trim());
+      setError("Escribe el código de tu empresa y tu cédula para solicitar el PIN.");
+      return;
+    }
+    setRequesting(true);
+    try {
+      await api.requestPin({ companyCode: code, cedula });
+      setRequested(true);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setRequesting(false);
+    }
+  }
 
   async function attempt(fn: () => Promise<void>) {
     setBusy(true);
@@ -60,7 +85,7 @@ export function Login() {
     const digits = value.replace(/\D/g, "").slice(0, PIN_LENGTH);
     setPin(digits);
     // Al completar el PIN entra solo: un toque menos.
-    if (digits.length === PIN_LENGTH && code && cedula && !busy) attempt(() => loginEmployee(code, cedula, digits));
+    if (digits.length === PIN_LENGTH && code && cedula && !entering) attempt(() => loginEmployee(code, cedula, digits));
   }
 
   return (
@@ -127,8 +152,9 @@ export function Login() {
             </>
           )}
           <ErrorBanner error={error ?? authError} />
-          <button className="btn btn-primary btn-block" disabled={busy}>
-            {busy ? "Entrando…" : "Entrar"}
+          <button className="btn btn-primary btn-block" disabled={entering} aria-busy={entering}>
+            {entering && <span className="btn-spinner" aria-hidden />}
+            {entering ? "Entrando…" : "Entrar"}
           </button>
         </form>
 
@@ -137,7 +163,18 @@ export function Login() {
             ¿Tu empresa aún no usa Marcaje? <Link to="/registro">Regístrala</Link>
           </p>
         ) : (
-          <p className="muted small center">¿No tienes PIN? Pídeselo a Recursos Humanos.</p>
+          <div className="pin-help">
+            {requested ? (
+              <div className="banner banner-ok" role="status">
+                Listo. Avisamos a Recursos Humanos: ellos te darán tu PIN.
+              </div>
+            ) : (
+              <button type="button" className="link-btn" onClick={requestPin} disabled={requesting}>
+                {requesting && <span className="btn-spinner" aria-hidden />}
+                {requesting ? "Enviando solicitud…" : "¿No tienes PIN? Solicítalo a RRHH"}
+              </button>
+            )}
+          </div>
         )}
       </div>
     </div>

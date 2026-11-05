@@ -1,7 +1,9 @@
 import { useMemo, useRef, useState, type FormEvent } from "react";
+import { PIN_REQUESTS_CHANGED } from "../../components/AdminLayout";
 import { Empty, ErrorBanner, Modal, Spinner, useAsync } from "../../components/ui";
 import { api, type Employee } from "../../lib/api";
 import { useAdmin } from "../../lib/auth";
+import { formatInstant } from "../../lib/format";
 import { parseEmployeeList } from "../../lib/shiftForm";
 
 interface Credentials {
@@ -15,6 +17,8 @@ const byName = (a: Employee, b: Employee) => a.name.localeCompare(b.name, "es");
 export function Employees() {
   const admin = useAdmin();
   const { data, error, loading, reload, setData } = useAsync(() => api.employees(), []);
+  const pins = useAsync(() => api.pinRequests(), []);
+  const [pinBusy, setPinBusy] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [cedula, setCedula] = useState("");
   const [busy, setBusy] = useState(false);
@@ -51,8 +55,24 @@ export function Employees() {
     try {
       const res = await api.resetPin(emp.id);
       setCredentials([{ name: emp.name, cedula: emp.cedula, pin: res.pin }]);
+      await pins.reload(); // pudo tener una solicitud pendiente
+      window.dispatchEvent(new Event(PIN_REQUESTS_CHANGED));
     } catch (err) {
       setActionError((err as Error).message);
+    }
+  }
+
+  async function answerRequest(id: string, fn: () => Promise<void>) {
+    setPinBusy(id);
+    setActionError(null);
+    try {
+      await fn();
+      await pins.reload();
+      window.dispatchEvent(new Event(PIN_REQUESTS_CHANGED));
+    } catch (err) {
+      setActionError((err as Error).message);
+    } finally {
+      setPinBusy(null);
     }
   }
 
@@ -85,6 +105,50 @@ export function Employees() {
           </button>
         </div>
       </div>
+
+      {!!pins.data?.requests.length && (
+        <section className="card pin-requests">
+          <h2 className="h3">Solicitudes de PIN · {pins.data.requests.length}</h2>
+          <p className="muted small">Confirma que sea esa persona antes de entregarle el PIN. Generar uno nuevo invalida el anterior.</p>
+          <ul className="list">
+            {pins.data.requests.map((r) => (
+              <li key={r.id} className="list-row">
+                <div className="grow">
+                  <strong>{r.employee.name}</strong>
+                  <div className="muted small">
+                    C.I. {r.employee.cedula} · {formatInstant(r.createdAt)}
+                  </div>
+                </div>
+                <div className="row-actions">
+                  <button
+                    className="btn btn-primary btn-sm"
+                    disabled={pinBusy === r.id}
+                    onClick={() =>
+                      answerRequest(r.id, async () => {
+                        const res = await api.resetPin(r.employee.id);
+                        setCredentials([{ name: r.employee.name, cedula: r.employee.cedula, pin: res.pin }]);
+                      })
+                    }
+                  >
+                    Generar PIN
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    disabled={pinBusy === r.id}
+                    onClick={() =>
+                      answerRequest(r.id, async () => {
+                        await api.dismissPinRequest(r.id);
+                      })
+                    }
+                  >
+                    Descartar
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <form className="card form-inline" onSubmit={create}>
         <label className="grow">

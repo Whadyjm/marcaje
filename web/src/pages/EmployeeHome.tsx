@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { InstallHint } from "../components/InstallHint";
 import { Logo } from "../components/Logo";
+import { LogoutButton } from "../components/LogoutButton";
 import { Spinner } from "../components/ui";
 import type { Shift } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -18,16 +19,18 @@ function useNow(intervalMs = 1000) {
 }
 
 export function EmployeeHome() {
-  const { info, session, logout } = useAuth();
+  const { info, session } = useAuth();
   const { today: data, queue, open, offline, loading, locked, notice, punch } = usePunches(session!.user.id);
   const [logoutNote, setLogoutNote] = useState<string | null>(null);
   // La hora mostrada usa la misma corrección que los marcajes, para que coincidan.
   const now = useNow() + (readOffset(localStorage) ?? 0);
 
-  function tryLogout() {
-    if (offline) return setLogoutNote("Necesitas conexión para cerrar sesión.");
-    if (queue.length && !confirm("Tienes marcajes sin enviar. Se conservan en este teléfono y se enviarán cuando vuelvas a entrar. ¿Salir?")) return;
-    void logout();
+  function canLeave() {
+    if (offline) {
+      setLogoutNote("Necesitas conexión para cerrar sesión.");
+      return false;
+    }
+    return !queue.length || confirm("Tienes marcajes sin enviar. Se conservan en este teléfono y se enviarán cuando vuelvas a entrar. ¿Salir?");
   }
 
   const elapsedMin = open ? Math.max(0, Math.floor((now - Date.parse(open.clockIn)) / 60_000)) : 0;
@@ -45,9 +48,7 @@ export function EmployeeHome() {
             <strong>{info?.name}</strong>
             <span className="muted">{info?.company.name}</span>
           </div>
-          <button className="btn btn-ghost btn-sm" onClick={tryLogout}>
-            Salir
-          </button>
+          <LogoutButton canLeave={canLeave} />
         </div>
       </header>
 

@@ -188,6 +188,9 @@ async function main() {
     "turno en revisión",
   );
 
+  // María olvidó su PIN y lo solicitó desde el login.
+  must(await db.from("pin_requests").insert({ company_id: a.companyId, employee_id: maria }).select("id"), "solicitud de PIN");
+
   // ---- Empresa B ----
   const b = await createCompany(COMPANIES[1]);
   const pedro = b.employees[COMPANIES[1].employees[0].cedula];

@@ -4,11 +4,11 @@
  *   - local:      Node → scripts/dev-server.ts
  *
  * Rutas (todas bajo /api):
- *   público      POST /register, GET /health
+ *   público      POST /register, POST /pin-requests, GET /health
  *   cualquiera   GET  /session
  *   colaborador  GET  /me/today, POST /me/punches/sync
  *   RRHH         /admin/employees, /admin/day, /admin/shifts, /admin/review-queue,
- *                /admin/punch-conflicts, /admin/report(.csv)
+ *                /admin/punch-conflicts, /admin/pin-requests, /admin/report(.csv)
  */
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { Hono } from "hono";
@@ -19,7 +19,7 @@ import { periodCsv } from "./domain/csv.ts";
 import { dayStatus, type DayStatus } from "./domain/day.ts";
 import { resolvePunchTime } from "./domain/deferred.ts";
 import { breakdownShift, minutesToHours } from "./domain/hours.ts";
-import { EMPLOYEE_EMAIL_DOMAIN, employeeEmail, isValidCedula, normalizeCedula } from "./domain/identity.ts";
+import { EMPLOYEE_EMAIL_DOMAIN, employeeEmail, isValidCedula, normalizeCedula, normalizeCompanyCode } from "./domain/identity.ts";
 import { weekOf } from "./domain/periods.ts";
 import { alertWindow, buildPeriodReport } from "./domain/report.ts";
 import { addDays, daysBetweenInclusive, isValidDate, localDateOf, startOfLocalDay, todayInCaracas } from "./domain/time.ts";
@@ -349,6 +349,31 @@ export function createApp(config: AppConfig) {
     }
   });
 
+  /**
+   * Solicitud de PIN desde el login. Es pública, así que responde lo mismo exista o
+   * no la persona: nadie puede usarla para averiguar quién trabaja en una empresa.
+   */
+  app.post("/pin-requests", async (c) => {
+    const body = parse(
+      z.object({
+        companyCode: z.string().transform(normalizeCompanyCode).refine((v) => v.length >= 4, "Escribe el código de tu empresa."),
+        cedula: z.string().transform(normalizeCedula).refine(isValidCedula, "Escribe tu cédula."),
+      }),
+      await c.req.json().catch(() => ({})),
+    );
+    const { data: company, error: cErr } = await db.from("companies").select("id").eq("code", body.companyCode).maybeSingle();
+    if (cErr) throw dbError(cErr, "empresa");
+    if (company) {
+      const { data: emp, error: eErr } = await db.from("employees").select("id").eq("company_id", company.id).eq("cedula", body.cedula).eq("active", true).maybeSingle();
+      if (eErr) throw dbError(eErr, "colaborador");
+      if (emp) {
+        const { error } = await db.from("pin_requests").insert({ company_id: company.id, employee_id: emp.id });
+        if (error && error.code !== "23505") throw dbError(error, "solicitud"); // 23505: ya hay una pendiente
+      }
+    }
+    return c.json({ ok: true }, 202);
+  });
+
   // ---- sesión --------------------------------------------------------------
   app.get("/session", authenticate(db), (c) => {
     const a = c.get("actor");
@@ -513,7 +538,39 @@ export function createApp(config: AppConfig) {
     const pin = generatePin();
     const { error } = await db.auth.admin.updateUserById(emp.user_id, { password: pin });
     if (error) throw new HttpError(500, "No se pudo restablecer el PIN.");
+    // Un PIN nuevo atiende cualquier solicitud pendiente de esa persona.
+    const { error: reqErr } = await db.from("pin_requests").update({ resolved_at: now().toISOString(), resolved_by: a.userId }).eq("employee_id", emp.id).is("resolved_at", null);
+    if (reqErr) console.error("[reset-pin] solicitud sin cerrar:", reqErr); // el PIN ya cambió: no se reporta como fallo
     return c.json({ pin, companyCode: a.company.code });
+  });
+
+  // Solicitudes de PIN
+  admin.get("/pin-requests", async (c) => {
+    const a = adminOf(c.get("actor"));
+    const { data, error } = await db
+      .from("pin_requests")
+      .select("id, created_at, employees (id, name, cedula)")
+      .eq("company_id", a.company.id)
+      .is("resolved_at", null)
+      .order("created_at", { ascending: false });
+    if (error) throw dbError(error, "solicitudes");
+    const rows = data as unknown as { id: string; created_at: string; employees: { id: string; name: string; cedula: string } }[];
+    return c.json({ requests: rows.map((r) => ({ id: r.id, createdAt: r.created_at, employee: r.employees })) });
+  });
+
+  admin.post("/pin-requests/:id/dismiss", async (c) => {
+    const a = adminOf(c.get("actor"));
+    const { data, error } = await db
+      .from("pin_requests")
+      .update({ resolved_at: now().toISOString(), resolved_by: a.userId })
+      .eq("company_id", a.company.id) // aislamiento entre empresas
+      .eq("id", c.req.param("id"))
+      .is("resolved_at", null)
+      .select("id")
+      .maybeSingle();
+    if (error) throw dbError(error, "solicitud");
+    if (!data) throw new HttpError(404, "Solicitud no encontrada.");
+    return c.json({ ok: true });
   });
 
   // Vista del día

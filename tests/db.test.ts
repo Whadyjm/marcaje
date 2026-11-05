@@ -50,6 +50,17 @@ beforeEach(async () => {
   employee = (await db.query<any>(`insert into public.employees(company_id,name,cedula) values ($1,'Ana',$2) returning id`, [company, ced])).rows[0].id;
 });
 
+describe("solicitudes de PIN", () => {
+  const request = () => db.query(`insert into public.pin_requests(company_id, employee_id) values ($1,$2)`, [company, employee]);
+
+  it("solo admite una pendiente por colaborador; resuelta, puede pedir otra", async () => {
+    await request();
+    await expect(request()).rejects.toMatchObject({ code: "23505" });
+    await db.query(`update public.pin_requests set resolved_at = now() where employee_id = $1`, [employee]);
+    await expect(request()).resolves.toBeTruthy();
+  });
+});
+
 describe("apply_punch", () => {
   it("entrada y salida en línea forman un turno", async () => {
     expect((await punch({ type: "in", at: at("08:00"), deferred: false })).status).toBe("applied");

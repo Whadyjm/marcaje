@@ -1242,3 +1242,76 @@ textarea:focus {
   gap: 6px;
   flex: none;
 }
+
+/* ---------- loader en botones ---------- */
+.btn-spinner {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: spin 0.7s linear infinite;
+  vertical-align: -0.15em;
+  margin-right: 2px;
+}
+.btn:disabled[aria-busy="true"] {
+  opacity: 0.8;
+  cursor: progress;
+}
+
+/* ---------- solicitudes de PIN ---------- */
+.pin-help {
+  margin-top: 12px;
+  text-align: center;
+}
+.pin-help .banner {
+  margin-bottom: 0;
+}
+.pin-help .link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pin-requests {
+  border-color: var(--brand-line);
+  background: var(--brand-soft);
+}
+.pin-requests p {
+  margin: -8px 0 8px;
+}
+.pin-requests .list-row {
+  border-color: var(--brand-line);
+}
+.bell {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+}
+.bell:hover {
+  background: var(--bg-soft);
+  color: var(--ink);
+}
+.bell.has-alerts {
+  color: var(--brand-dark);
+}
+.bell-count {
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--brand);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 17px;
+  text-align: center;
+}
