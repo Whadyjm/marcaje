@@ -32,6 +32,9 @@ export function Login() {
   const [requesting, setRequesting] = useState(false);
   const [requested, setRequested] = useState(false);
   const [locked, setLocked] = useState(false);
+  const [forgot, setForgot] = useState(false);
+  // Se fija al abrir: el título no debe cambiar mientras escribe el código.
+  const [hadCode, setHadCode] = useState(false);
 
   useEffect(() => {
     if (codeParam) {
@@ -46,8 +49,22 @@ export function Login() {
   // Validar las credenciales no es entrar: falta consultar el rol, y con mala señal tarda.
   const entering = busy || (!!session && !authError);
 
+  function openForgot() {
+    setForgot(true);
+    setHadCode(!!code.trim());
+    setRequested(false);
+    setError(null);
+    if (!code.trim()) setEditingCode(true);
+  }
+
+  function closeForgot() {
+    setForgot(false);
+    setRequested(false);
+    setError(null);
+  }
+
   async function requestPin() {
-    if (!locked) setError(null);
+    setError(null);
     setRequested(false);
     if (!code.trim() || !cedula.trim()) {
       setEditingCode(!code.trim());
@@ -107,6 +124,61 @@ export function Login() {
         </ul>
       </section>
 
+      {forgot ? (
+        <div className="auth-card">
+          <h2 className="h2 forgot-title">{hadCode ? "Olvidé mi PIN" : "Solicitar mi PIN"}</h2>
+          {requested ? (
+            <>
+              {/* No afirma que se avisó: la ruta no revela si la cédula existe, y pudo tener un error. */}
+              <div className="banner banner-ok" role="status">
+                Si tus datos coinciden, RRHH recibirá tu solicitud y te dará {hadCode ? "un PIN nuevo" : "tu PIN"}.
+              </div>
+              <p className="muted small">¿Pasa el tiempo y nadie te contacta? Revisa que tu cédula esté bien escrita o habla directamente con RRHH.</p>
+              <button type="button" className="btn btn-ghost btn-block" onClick={closeForgot}>
+                Volver a entrar
+              </button>
+            </>
+          ) : (
+            <form
+              className="form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void requestPin();
+              }}
+            >
+              <p className="muted small forgot-intro">
+                {hadCode ? "Le avisaremos a RRHH para que te genere uno nuevo. Hasta entonces, tu PIN anterior sigue siendo el válido." : "Le avisaremos a RRHH para que te dé tu PIN."}
+              </p>
+              {editingCode ? (
+                <label>
+                  Código de empresa
+                  <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} autoCapitalize="characters" autoComplete="organization" placeholder="EMPRESAA" autoFocus />
+                </label>
+              ) : (
+                <div className="known-company">
+                  <span className="muted small">Empresa</span>
+                  <strong>{code}</strong>
+                  <button type="button" className="link-btn" onClick={() => setEditingCode(true)}>
+                    Cambiar
+                  </button>
+                </div>
+              )}
+              <label>
+                Cédula
+                <input value={cedula} onChange={(e) => setCedula(e.target.value)} inputMode="numeric" autoComplete="username" placeholder="12345678" autoFocus={!editingCode} />
+              </label>
+              <ErrorBanner error={error} />
+              <button className="btn btn-primary btn-block" disabled={requesting} aria-busy={requesting}>
+                {requesting && <span className="btn-spinner" aria-hidden />}
+                {requesting ? "Enviando solicitud…" : hadCode ? "Solicitar PIN nuevo" : "Solicitar PIN"}
+              </button>
+              <button type="button" className="link-btn forgot-back" onClick={closeForgot} disabled={requesting}>
+                Volver a entrar
+              </button>
+            </form>
+          )}
+        </div>
+      ) : (
       <div className="auth-card">
         <div className="segmented" role="tablist">
           <button role="tab" aria-selected={mode === "employee"} className={mode === "employee" ? "active" : ""} onClick={() => { setMode("employee"); setLocked(false); }}>
@@ -162,19 +234,13 @@ export function Login() {
           </p>
         ) : (
           <div className="pin-help">
-            {requested ? (
-              <div className="banner banner-ok" role="status">
-                Listo. Avisamos a Recursos Humanos: ellos te darán tu PIN.
-              </div>
-            ) : (
-              <button type="button" className={locked ? "btn btn-primary btn-block" : "link-btn"} onClick={requestPin} disabled={requesting}>
-                {requesting && <span className="btn-spinner" aria-hidden />}
-                {requesting ? "Enviando solicitud…" : locked ? "Contactar a RRHH para un PIN nuevo" : "¿No tienes PIN? Solicítalo a RRHH"}
-              </button>
-            )}
+            <button type="button" className={locked ? "btn btn-primary btn-block" : "link-btn"} onClick={openForgot}>
+              {locked ? "Contactar a RRHH para un PIN nuevo" : code.trim() ? "Olvidé mi PIN" : "¿No tienes PIN? Solicítalo a RRHH"}
+            </button>
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }

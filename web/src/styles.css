@@ -1063,36 +1063,6 @@ textarea:focus {
   background: #f3f4f6;
   color: var(--muted);
 }
-.punch-btn {
-  font: inherit;
-  font-size: 1.3rem;
-  font-weight: 700;
-  border: 0;
-  border-radius: 12px;
-  padding: 28px 16px;
-  color: #fff;
-  cursor: pointer;
-  transition: transform 0.08s ease, background 0.15s ease;
-  touch-action: manipulation;
-}
-.punch-btn:active:not(:disabled) {
-  transform: scale(0.98);
-}
-.punch-btn:disabled {
-  opacity: 0.7;
-}
-.punch-in {
-  background: var(--brand);
-}
-.punch-in:hover:not(:disabled) {
-  background: var(--brand-dark);
-}
-.punch-out {
-  background: var(--ink);
-}
-.punch-out:hover:not(:disabled) {
-  background: #000;
-}
 .stats {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1468,4 +1438,104 @@ textarea:focus {
 }
 .pin-help .btn {
   white-space: normal;
+}
+
+/* ---------- olvidé mi PIN ---------- */
+.forgot-title {
+  margin-top: 0;
+}
+.forgot-intro {
+  margin: 0;
+}
+.forgot-back {
+  align-self: center;
+}
+
+/* ---------- deslizar para marcar ---------- */
+.slide {
+  --slide-handle: 64px;
+  --slide-pad: 6px;
+  --slide-color: var(--brand);
+  position: relative;
+  height: calc(var(--slide-handle) + 2 * var(--slide-pad));
+  border-radius: 14px;
+  background: var(--brand-soft);
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: pan-y;
+}
+.slide-out {
+  --slide-color: var(--ink);
+  background: #eceef1;
+}
+.slide-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--slide-color);
+  opacity: 0.18;
+  border-radius: 14px;
+}
+.slide-label {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 0 16px 0 calc(var(--slide-handle) + 2 * var(--slide-pad));
+  font-size: 1.02rem;
+  font-weight: 700;
+  color: var(--slide-color);
+  pointer-events: none;
+}
+.slide-handle {
+  position: absolute;
+  top: var(--slide-pad);
+  left: var(--slide-pad);
+  width: var(--slide-handle);
+  height: var(--slide-handle);
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 10px;
+  background: var(--slide-color);
+  color: #fff;
+  cursor: grab;
+  touch-action: none; /* el arrastre es de la manija, no del scroll */
+  transition: transform 0.22s ease;
+}
+.slide-handle.is-dragging {
+  cursor: grabbing;
+  transition: none;
+}
+.slide-handle:focus-visible {
+  outline: 3px solid var(--brand-line);
+  outline-offset: 2px;
+}
+.slide-handle.is-nudging {
+  animation: slide-nudge 0.6s ease;
+}
+.slide.is-disabled {
+  opacity: 0.6;
+}
+.slide.is-disabled .slide-handle {
+  cursor: default;
+}
+@keyframes slide-nudge {
+  30% {
+    transform: translateX(26px);
+  }
+  60% {
+    transform: translateX(0);
+  }
+  80% {
+    transform: translateX(10px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .slide-handle {
+    transition: none;
+  }
+  .slide-handle.is-nudging {
+    animation: none;
+  }
 }

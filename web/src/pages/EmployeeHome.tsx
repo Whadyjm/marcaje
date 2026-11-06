@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { InstallHint } from "../components/InstallHint";
 import { ShiftChangeForm } from "../components/ShiftChangeForm";
+import { SlideToConfirm } from "../components/SlideToConfirm";
 import { Logo } from "../components/Logo";
 import { LogoutButton } from "../components/LogoutButton";
 import { Spinner } from "../components/ui";
@@ -91,14 +92,11 @@ export function EmployeeHome() {
                 )}
               </div>
 
+              {/* La key reinicia la manija al pasar de entrada a salida. */}
               {open ? (
-                <button className="punch-btn punch-out" onClick={() => punch("out")} disabled={locked}>
-                  Marcar salida
-                </button>
+                <SlideToConfirm key="out" tone="out" label="Desliza para marcar salida" disabled={locked} onConfirm={() => punch("out")} />
               ) : (
-                <button className="punch-btn punch-in" onClick={() => punch("in")} disabled={locked}>
-                  Marcar entrada
-                </button>
+                <SlideToConfirm key="in" tone="in" label="Desliza para marcar entrada" disabled={locked} onConfirm={() => punch("in")} />
               )}
               {open && elapsedMin >= 14 * 60 ? (
                 <div className="banner banner-warn">¿Olvidaste marcar tu salida? Si ya saliste, avísale a RRHH para que la corrija.</div>
