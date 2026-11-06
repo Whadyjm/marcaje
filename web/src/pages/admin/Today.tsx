@@ -17,10 +17,25 @@ const ORDER: DayStatus[] = ["sin_salida", "sin_marcar", "dentro", "salio"];
 
 type Row = DayView["rows"][number];
 type Editing = { row: Row; shift?: Shift };
+type Filter = DayStatus | "absent" | "late" | "early" | "all";
+
+const isLate = (r: Row) => r.attendance.kind === "present" && r.attendance.lateMin > 0;
+const leftEarly = (r: Row) => r.attendance.kind === "present" && r.attendance.earlyLeaveMin > 0;
+const isAbsent = (r: Row) => r.attendance.kind === "absent";
+/** Quien falta va primero; quien descansa o aún no entra no requiere nada. */
+const rank = (r: Row) => (isAbsent(r) ? -1 : r.attendance.kind === "rest" || r.attendance.kind === "upcoming" ? 5 : ORDER.indexOf(r.status));
+
+function matches(r: Row, filter: Filter) {
+  if (filter === "all") return true;
+  if (filter === "absent") return isAbsent(r);
+  if (filter === "late") return isLate(r);
+  if (filter === "early") return leftEarly(r);
+  return r.status === filter;
+}
 
 export function Today() {
   const [date, setDate] = useState<string | undefined>(undefined);
-  const [filter, setFilter] = useState<DayStatus | "all">("all");
+  const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState<Editing | null>(null);
   const { data, error, loading, reload } = useAsync(() => api.day(date), [date]);
@@ -37,9 +52,9 @@ export function Today() {
     if (!data) return [];
     const q = search.trim().toLowerCase();
     return data.rows
-      .filter((r) => filter === "all" || r.status === filter)
+      .filter((r) => matches(r, filter))
       .filter((r) => !q || r.employee.name.toLowerCase().includes(q) || r.employee.cedula.includes(q))
-      .sort((a, b) => ORDER.indexOf(a.status) - ORDER.indexOf(b.status) || a.employee.name.localeCompare(b.employee.name, "es"));
+      .sort((a, b) => rank(a) - rank(b) || a.employee.name.localeCompare(b.employee.name, "es"));
   }, [data, filter, search]);
 
   if (loading && !data) return <Spinner />;
@@ -109,6 +124,22 @@ export function Today() {
         ))}
       </div>
 
+      {data.rows.some((r) => r.attendance.kind !== "unscheduled") && (
+        <div className="chips attendance-filter">
+          {(
+            [
+              ["absent", "Ausentes", data.rows.filter(isAbsent).length],
+              ["late", "Llegaron tarde", data.rows.filter(isLate).length],
+              ["early", "Salieron antes", data.rows.filter(leftEarly).length],
+            ] as [Filter, string, number][]
+          ).map(([key, label, n]) => (
+            <button key={key} aria-pressed={filter === key} className={`chip chip-sm${filter === key ? " active" : ""}`} onClick={() => setFilter(filter === key ? "all" : key)}>
+              {label} <span className="chip-note">{n}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {data.rows.length === 0 ? (
         <Empty>
           Aún no tienes colaboradores.{" "}
@@ -133,7 +164,7 @@ export function Today() {
         </>
       )}
 
-      {data.rows.length > 0 && <p className="hint">Quien marcó sin señal aparece aquí cuando su teléfono recupera la conexión.</p>}
+      {data.rows.length > 0 && <p className="hint">Quien marcó sin señal aparece aquí cuando su teléfono recupera la conexión, así que “Ausente” puede ser provisional.</p>}
 
       {editing && (
         <ShiftEditor
@@ -152,7 +183,23 @@ export function Today() {
   );
 }
 
+function AttendanceBadges({ row: r }: { row: Row }) {
+  const a = r.attendance;
+  // Sin marcajes, el horario dice más que "no ha marcado".
+  if (r.status === "sin_marcar" && a.kind === "absent") return <span className="badge st-absent">Ausente</span>;
+  if (r.status === "sin_marcar" && a.kind === "upcoming") return <span className="badge st-none">Entra a las {a.start}</span>;
+  if (r.status === "sin_marcar" && a.kind === "rest") return <span className="badge st-none">Descanso</span>;
+  return (
+    <>
+      <span className={`badge ${STATUS[r.status].className}`}>{STATUS[r.status].label}</span>
+      {a.kind === "present" && a.lateMin > 0 && <span className="badge st-warn">{formatHM(a.lateMin)} tarde</span>}
+      {a.kind === "present" && a.earlyLeaveMin > 0 && <span className="badge st-warn">{formatHM(a.earlyLeaveMin)} antes</span>}
+    </>
+  );
+}
+
 function DayRow({ row: r, date, onEdit }: { row: Row; date: string; onEdit: (shift?: Shift) => void }) {
+  const a = r.attendance;
   const open = r.openShift ?? r.shifts.find((s) => !s.clockOut) ?? null;
   const fromOtherDay = open && open.workDate !== date;
   return (
@@ -160,9 +207,17 @@ function DayRow({ row: r, date, onEdit }: { row: Row; date: string; onEdit: (shi
       <div className="grow">
         <div className="row-title">
           <strong>{r.employee.name}</strong>
-          <span className={`badge ${STATUS[r.status].className}`}>{STATUS[r.status].label}</span>
+          <AttendanceBadges row={r} />
         </div>
-        <div className="muted small">C.I. {r.employee.cedula}</div>
+        <div className="muted small">
+          C.I. {r.employee.cedula}
+          {"start" in a && (
+            <>
+              {" "}
+              · Horario {a.start}–{a.end}
+            </>
+          )}
+        </div>
         {[...r.shifts].reverse().map((s) => (
           <div key={s.id} className="shift-line">
             <span>

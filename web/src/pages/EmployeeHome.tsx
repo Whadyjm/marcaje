@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { InstallHint } from "../components/InstallHint";
+import { ShiftChangeForm } from "../components/ShiftChangeForm";
 import { Logo } from "../components/Logo";
 import { LogoutButton } from "../components/LogoutButton";
 import { Spinner } from "../components/ui";
-import type { Shift } from "../lib/api";
+import { api, type Shift, type ShiftChange } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { formatDay, formatHM, formatHours, formatLongDay, localDateOf, localTimeOf } from "../lib/format";
 import { pendingRows, readOffset, type PendingRow } from "../lib/punchQueue";
@@ -20,7 +21,9 @@ function useNow(intervalMs = 1000) {
 
 export function EmployeeHome() {
   const { info, session } = useAuth();
-  const { today: data, queue, open, offline, loading, locked, notice, punch } = usePunches(session!.user.id);
+  const { today: data, queue, open, offline, loading, locked, notice, punch, retry } = usePunches(session!.user.id);
+  const [changing, setChanging] = useState(false);
+  const [changeNote, setChangeNote] = useState<string | null>(null);
   const [logoutNote, setLogoutNote] = useState<string | null>(null);
   // La hora mostrada usa la misma corrección que los marcajes, para que coincidan.
   const now = useNow() + (readOffset(localStorage) ?? 0);
@@ -66,6 +69,12 @@ export function EmployeeHome() {
             {localTimeOf(nowIso)}
           </div>
           <div className="muted">{formatLongDay(today)} · hora de Caracas</div>
+          {data?.expected?.kind === "shift" && (
+            <div className="muted small">
+              Tu horario de hoy: {data.expected.start}–{data.expected.end}
+            </div>
+          )}
+          {data?.expected?.kind === "rest" && <div className="muted small">Hoy es tu día de descanso</div>}
 
           {!data && loading ? (
             <Spinner />
@@ -127,6 +136,34 @@ export function EmployeeHome() {
           </section>
         )}
 
+        {data && (
+          <section className="card">
+            <div className="card-head">
+              <h2 className="h3">Cambios de turno</h2>
+              <button className="btn btn-ghost btn-sm" disabled={offline} title={offline ? "Necesitas conexión" : undefined} onClick={() => setChanging(true)}>
+                Solicitar cambio
+              </button>
+            </div>
+            {changeNote && (
+              <div className="banner banner-ok" role="status">
+                ✓ {changeNote}
+              </div>
+            )}
+            <ShiftChangeList changes={data.shiftChanges ?? []} offline={offline} onChanged={retry} />
+          </section>
+        )}
+
+        {changing && (
+          <ShiftChangeForm
+            onClose={() => setChanging(false)}
+            onSent={() => {
+              setChanging(false);
+              setChangeNote("Tu solicitud se envió a RRHH.");
+              void retry();
+            }}
+          />
+        )}
+
         {(data || pending.length > 0) && (
           <section className="card">
             <h2 className="h3">Mis últimos marcajes</h2>
@@ -135,6 +172,54 @@ export function EmployeeHome() {
         )}
       </main>
     </div>
+  );
+}
+
+const CHANGE_STATUS: Record<ShiftChange["status"], { label: string; className: string }> = {
+  pending: { label: "Pendiente", className: "st-warn" },
+  approved: { label: "Aprobado", className: "st-in" },
+  rejected: { label: "Rechazado", className: "st-absent" },
+  cancelled: { label: "Cancelado", className: "st-none" },
+};
+
+function ShiftChangeList({ changes, offline, onChanged }: { changes: ShiftChange[]; offline: boolean; onChanged: () => Promise<void> }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  if (!changes.length) return <p className="muted small">¿Necesitas otro horario o un día libre? Solicítalo a RRHH.</p>;
+
+  async function cancel(id: string) {
+    setBusy(id);
+    setError(null);
+    try {
+      await api.cancelShiftChange(id);
+      await onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <>
+      {error && <div className="banner banner-error">{error}</div>}
+      <ul className="list">
+        {changes.map((c) => (
+          <li key={c.id} className="list-row">
+            <div className="grow">
+              <strong>{formatDay(c.workDate)}</strong> · {c.to ? `${c.to.start}–${c.to.end}` : "Día libre"}
+              <span className={`badge ${CHANGE_STATUS[c.status].className}`}>{CHANGE_STATUS[c.status].label}</span>
+              <div className="muted small">{c.status === "rejected" && c.decisionNote ? c.decisionNote : c.reason}</div>
+            </div>
+            {c.status === "pending" && !offline && (
+              <button className="link-btn" disabled={busy === c.id} onClick={() => cancel(c.id)}>
+                Cancelar
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 

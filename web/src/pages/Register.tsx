@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Logo } from "../components/Logo";
+import { PasswordInput } from "../components/PasswordInput";
 import { ErrorBanner } from "../components/ui";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
@@ -47,11 +48,7 @@ export function Register() {
             Correo
             <input value={form.email} onChange={set("email")} type="email" required autoComplete="email" />
           </label>
-          <label>
-            Contraseña
-            <input value={form.password} onChange={set("password")} type="password" required minLength={8} autoComplete="new-password" />
-            <span className="hint">Mínimo 8 caracteres.</span>
-          </label>
+          <PasswordInput label="Contraseña" name="contraseña" hint="Mínimo 8 caracteres." value={form.password} onChange={set("password")} required minLength={8} autoComplete="new-password" />
           <ErrorBanner error={error} />
           <button className="btn btn-primary btn-block" disabled={busy}>
             {busy && <span className="btn-spinner" aria-hidden />}

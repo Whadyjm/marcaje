@@ -13,11 +13,18 @@
 import { createClient, type User } from "@supabase/supabase-js";
 import ws from "ws";
 import { employeeEmail } from "../supabase/functions/api/domain/identity.ts";
+import { hashPin, newAuthSecret } from "../supabase/functions/api/domain/pin.ts";
 import { addDays, todayInCaracas } from "../supabase/functions/api/domain/time.ts";
 
 const url = process.env.SUPABASE_URL;
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 if (!url || !key) throw new Error("Faltan SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY en .env");
+// El seed BORRA empresas y crea cuentas con contraseñas públicas (están en el README).
+// Contra un proyecto real sería una puerta abierta: se exige confirmarlo expresamente.
+const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1)/.test(url);
+if (!isLocal && process.env.ALLOW_REMOTE_SEED !== "1") {
+  throw new Error(`El seed apunta a ${url}, que no es local. Si es un proyecto de desarrollo, ejecuta con ALLOW_REMOTE_SEED=1.`);
+}
 const db = createClient(url, key, {
   auth: { persistSession: false, autoRefreshToken: false },
   // deno-lint-ignore no-explicit-any
@@ -96,12 +103,15 @@ async function createCompany(c: SeedCompany) {
 
   const employees: Record<string, string> = {};
   for (const e of c.employees) {
-    const u = userOf(await db.auth.admin.createUser({ email: employeeEmail(c.code, e.cedula), password: e.pin, email_confirm: true, user_metadata: { name: e.name, role: "employee" } }), `usuario ${e.cedula}`);
+    const authSecret = newAuthSecret();
+    const u = userOf(await db.auth.admin.createUser({ email: employeeEmail(c.code, e.cedula), password: authSecret, email_confirm: true, user_metadata: { name: e.name, role: "employee" } }), `usuario ${e.cedula}`);
     const row = must(
       await db.from("employees").insert({ company_id: company.id, user_id: u.id, name: e.name, cedula: e.cedula }).select("id").single(),
       `colaborador ${e.cedula}`,
     );
     employees[e.cedula] = row.id;
+    const { salt, pinHash } = await hashPin(e.pin);
+    must(await db.from("employee_pins").insert({ employee_id: row.id, salt, pin_hash: pinHash, auth_secret: authSecret }).select("employee_id"), `PIN ${e.cedula}`);
   }
   return { companyId: company.id, adminId: adminUser.id, employees };
 }
@@ -186,6 +196,26 @@ async function main() {
       .insert({ company_id: a.companyId, employee_id: ana, clock_in: ccs(pastDays[0], "06:00"), clock_out: ccs(pastDays[0], "07:30"), source: "offline", needs_review: true, review_reason: "El reloj del teléfono cambió" })
       .select("id"),
     "turno en revisión",
+  );
+
+  // Horarios esperados (solo generan avisos en "Hoy"). Pedro no tiene: se ve como antes.
+  const days = (list: string, start: string, end: string) => Object.fromEntries([...list].map((d) => [d, { start, end }]));
+  for (const [employee_id, week] of [
+    [ana, days("12345", "08:00", "17:00")],
+    [luis, days("123456", "07:00", "19:30")],
+    [maria, days("12345", "22:00", "06:30")],
+    [carlos, days("12345", "08:00", "16:00")],
+  ] as const) {
+    must(await db.from("employee_schedules").insert({ employee_id, company_id: a.companyId, effective_from: pastDays[0], week, created_by: a.adminId }).select("employee_id"), "horario");
+  }
+
+  // Ana pidió cambiar el turno de mañana.
+  must(
+    await db
+      .from("shift_change_requests")
+      .insert({ company_id: a.companyId, employee_id: ana, work_date: addDays(today, 1), from_start: "08:00", from_end: "17:00", to_start: "14:00", to_end: "22:00", reason: "Cita médica en la mañana" })
+      .select("id"),
+    "cambio de turno",
   );
 
   // María olvidó su PIN y lo solicitó desde el login.

@@ -1,3 +1,4 @@
+import type { Attendance, DaySchedule, WeekSchedule } from "@domain/schedule.ts";
 import type { QueuedPunch } from "./punchQueue";
 import { API_URL, supabase } from "./supabase";
 
@@ -119,7 +120,7 @@ export interface DayView {
   today: string;
   serverTime: string;
   counts: Record<DayStatus, number>;
-  rows: { employee: Employee; status: DayStatus; shifts: Shift[]; openShift: Shift | null }[];
+  rows: { employee: Employee; status: DayStatus; attendance: Attendance; shifts: Shift[]; openShift: Shift | null }[];
   weekAlerts: WeekAlert[];
   week: { from: string; to: string };
   pending: { review: number; conflicts: number };
@@ -173,9 +174,31 @@ export interface PunchConflict {
   reason: string;
 }
 
+export type { Attendance, WeekSchedule };
+
+export type ExpectedToday = { kind: "none" } | { kind: "rest" } | ({ kind: "shift" } & DaySchedule);
+
+export interface ShiftChange {
+  id: string;
+  employee?: { name: string; cedula: string };
+  workDate: string;
+  from: DaySchedule | null;
+  to: DaySchedule | null;
+  reason: string;
+  status: "pending" | "approved" | "rejected" | "cancelled";
+  decisionNote: string | null;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  createdAt: string;
+}
+
 export interface EmployeeToday {
   today: string;
+  /** Ausente en copias guardadas antes de existir los cambios de turno. */
+  shiftChanges?: ShiftChange[];
   serverTime: string;
+  /** Ausente en copias guardadas antes de existir los horarios. */
+  expected?: ExpectedToday;
   openShift: Shift | null;
   week: { from: string; to: string; totalHours: number; overtimeHours: number };
   recent: Shift[];
@@ -188,6 +211,11 @@ export const api = {
   register: (body: { companyName: string; adminName: string; email: string; password: string }) =>
     request<{ company: Company }>("POST", "/register", body),
   session: () => request<SessionInfo>("GET", "/session"),
+  employeeLogin: (body: { companyCode: string; cedula: string; pin: string }) => request<{ accessToken: string; refreshToken: string }>("POST", "/auth/employee-login", body),
+  requestShiftChange: (body: { workDate: string; to: DaySchedule | null; reason: string }) => request<{ request: ShiftChange }>("POST", "/me/shift-changes", body),
+  cancelShiftChange: (id: string) => request<{ ok: true }>("POST", `/me/shift-changes/${id}/cancel`),
+  shiftChanges: () => request<{ requests: ShiftChange[] }>("GET", "/admin/shift-changes"),
+  decideShiftChange: (id: string, body: { approve: boolean; note?: string }) => request<{ request: ShiftChange }>("POST", `/admin/shift-changes/${id}/decide`, body),
   requestPin: (body: { companyCode: string; cedula: string }) => request<{ ok: true }>("POST", "/pin-requests", body),
 
   // colaborador
@@ -208,6 +236,9 @@ export const api = {
     request<{ shift: Shift }>("POST", "/admin/shifts", body),
   correctShift: (id: string, body: { clockIn: string; clockOut: string | null; reason: string }) =>
     request<{ shift: Shift }>("PATCH", `/admin/shifts/${id}`, body),
+  schedules: () => request<{ toleranceMin: number; schedules: { employeeId: string; week: WeekSchedule | null }[] }>("GET", "/admin/schedules"),
+  saveSchedules: (body: { employeeIds: string[]; week: WeekSchedule | null }) => request<{ ok: true }>("POST", "/admin/schedules", body),
+  saveTolerance: (lateToleranceMin: number) => request<{ toleranceMin: number }>("PATCH", "/admin/settings", { lateToleranceMin }),
   pinRequests: () => request<{ requests: PinRequest[] }>("GET", "/admin/pin-requests"),
   dismissPinRequest: (id: string) => request<{ ok: true }>("POST", `/admin/pin-requests/${id}/dismiss`),
   reviewQueue: () => request<{ shifts: Shift[]; conflicts: PunchConflict[] }>("GET", "/admin/review-queue"),

@@ -4,3 +4,8 @@ project_id = "marcaje"
 [functions.api]
 # La verificación del JWT la hace nuestro backend (hay rutas públicas como /register).
 verify_jwt = false
+
+# Bloqueo por intentos fallidos de PIN (ver migración 20261105030000_hardening.sql).
+[auth.hook.password_verification_attempt]
+enabled = true
+uri = "pg-functions://postgres/public/hook_password_verification_attempt"

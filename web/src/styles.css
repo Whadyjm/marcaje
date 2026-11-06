@@ -1315,3 +1315,157 @@ textarea:focus {
   line-height: 17px;
   text-align: center;
 }
+
+/* ---------- mostrar u ocultar contraseña ---------- */
+.field > .hint {
+  margin-top: 0;
+}
+.password-field {
+  position: relative;
+}
+.password-field input {
+  padding-right: 48px;
+}
+/* El botón propio de Edge duplicaría el nuestro. */
+.password-field input::-ms-reveal,
+.password-field input::-ms-clear {
+  display: none;
+}
+.password-toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 44px;
+  height: 100%;
+  min-height: 44px;
+  display: grid;
+  place-items: center;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--faint);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.password-toggle:hover,
+.password-toggle[aria-pressed="true"] {
+  color: var(--brand-dark);
+}
+.password-toggle:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -2px;
+}
+
+/* ---------- horario esperado ---------- */
+.st-absent {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+.attendance-filter {
+  margin-bottom: 12px;
+}
+.tolerance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 14px;
+}
+.bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: var(--brand-soft);
+  border: 1px solid var(--brand-line);
+  border-radius: var(--radius-sm);
+}
+.select-cell {
+  width: 36px;
+}
+.schedule-link {
+  text-align: left;
+  padding-left: 0;
+}
+.schedule-days {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.schedule-days li {
+  display: grid;
+  grid-template-columns: 76px 1fr 1fr;
+  align-items: center;
+  gap: 8px;
+}
+.schedule-days input[type="time"] {
+  min-height: 38px;
+  padding: 6px 8px;
+  min-width: 0;
+}
+.schedule-days .is-off,
+.schedule-days li.is-off label {
+  color: var(--muted);
+}
+.schedule-rest {
+  grid-column: 2 / -1;
+}
+.schedule-remove {
+  margin-right: auto;
+  color: var(--danger);
+}
+@media (max-width: 719px) {
+  .select-cell {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .modal-footer {
+    flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 479px) {
+  /* El nombre necesita el ancho completo para leerse. */
+  .form-inline label {
+    flex: 1 1 100%;
+  }
+  .form-inline .btn {
+    width: 100%;
+  }
+  /* En celular el selector de hora abre al tocar el campo: el ícono solo le quita espacio. */
+  .schedule-days li {
+    grid-template-columns: 62px 1fr 1fr;
+    gap: 6px;
+  }
+  .schedule-days input[type="time"]::-webkit-calendar-picker-indicator {
+    display: none;
+  }
+}
+
+/* ---------- cambios de turno ---------- */
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.card-head .h3 {
+  margin: 0;
+}
+.row2-even {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.row2-even input {
+  min-width: 0;
+}
+.pin-help .btn {
+  white-space: normal;
+}

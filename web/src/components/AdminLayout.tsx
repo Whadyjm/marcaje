@@ -13,9 +13,8 @@ function usePinRequestCount() {
   const [count, setCount] = useState(0);
   useEffect(() => {
     const load = () => {
-      api
-        .pinRequests()
-        .then((r) => setCount(r.requests.length))
+      Promise.all([api.pinRequests(), api.shiftChanges()])
+        .then(([pins, changes]) => setCount(pins.requests.length + changes.requests.length))
         .catch(() => {}); // es un aviso: se reintenta en el siguiente ciclo
     };
     load();
@@ -68,7 +67,7 @@ export function AdminLayout() {
             </span>
             <span className="topbar-company-name">{info.company.name}</span>
           </div>
-          <Link className={`bell${pinRequests ? " has-alerts" : ""}`} to="/admin/colaboradores" aria-label={pinRequests ? `${pinRequests} solicitudes de PIN` : "Sin solicitudes de PIN"} title={pinRequests ? "Solicitudes de PIN" : "Sin solicitudes de PIN"}>
+          <Link className={`bell${pinRequests ? " has-alerts" : ""}`} to="/admin/colaboradores" aria-label={pinRequests ? `${pinRequests} solicitudes pendientes` : "Sin solicitudes pendientes"} title={pinRequests ? "Solicitudes pendientes" : "Sin solicitudes pendientes"}>
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
               <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
               <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />

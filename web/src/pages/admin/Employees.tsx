@@ -1,7 +1,10 @@
 import { useMemo, useRef, useState, type FormEvent } from "react";
+import { summarizeWeek } from "@domain/schedule.ts";
 import { PIN_REQUESTS_CHANGED } from "../../components/AdminLayout";
+import { ScheduleEditor } from "../../components/ScheduleEditor";
+import { ShiftChangeRequests } from "../../components/ShiftChangeRequests";
 import { Empty, ErrorBanner, Modal, Spinner, useAsync } from "../../components/ui";
-import { api, type Employee } from "../../lib/api";
+import { api, type Employee, type WeekSchedule } from "../../lib/api";
 import { useAdmin } from "../../lib/auth";
 import { formatInstant } from "../../lib/format";
 import { parseEmployeeList } from "../../lib/shiftForm";
@@ -18,6 +21,10 @@ export function Employees() {
   const admin = useAdmin();
   const { data, error, loading, reload, setData } = useAsync(() => api.employees(), []);
   const pins = useAsync(() => api.pinRequests(), []);
+  const schedules = useAsync(() => api.schedules(), []);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [scheduling, setScheduling] = useState<{ employees: Employee[]; initial: WeekSchedule | null } | null>(null);
+  const [savingTolerance, setSavingTolerance] = useState(false);
   const [pinBusy, setPinBusy] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [cedula, setCedula] = useState("");
@@ -87,6 +94,29 @@ export function Employees() {
     }
   }
 
+  const weekOf = (id: string) => schedules.data?.schedules.find((s) => s.employeeId === id)?.week ?? null;
+
+  function toggleSelected(id: string) {
+    setSelected((all) => {
+      const next = new Set(all);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  }
+
+  async function saveTolerance(minutes: number) {
+    setSavingTolerance(true);
+    setActionError(null);
+    try {
+      await api.saveTolerance(minutes);
+      await schedules.reload();
+    } catch (err) {
+      setActionError((err as Error).message);
+    } finally {
+      setSavingTolerance(false);
+    }
+  }
+
   const q = search.trim().toLowerCase();
   const employees = (data?.employees ?? []).filter((e) => (showInactive || e.active) && (!q || e.name.toLowerCase().includes(q) || e.cedula.includes(q)));
   const inactiveCount = data?.employees.filter((e) => !e.active).length ?? 0;
@@ -96,7 +126,7 @@ export function Employees() {
     <>
       <div className="page-head">
         <div>
-          <span className="eyebrow">Equipo · {data?.employees.filter((e) => e.active).length ?? 0} activos</span>
+          <span className="eyebrow">Equipo{data ? ` · ${data.employees.filter((e) => e.active).length} activos` : ""}</span>
           <h1>Colaboradores</h1>
         </div>
         <div className="page-actions">
@@ -105,6 +135,8 @@ export function Employees() {
           </button>
         </div>
       </div>
+
+      <ShiftChangeRequests />
 
       {!!pins.data?.requests.length && (
         <section className="card pin-requests">
@@ -166,6 +198,18 @@ export function Employees() {
       </form>
 
       <ErrorBanner error={actionError} />
+      {schedules.data && (
+        <div className="tolerance">
+          <span className="small">Tolerancia para llegar tarde o salir antes:</span>
+          <div className="chips">
+            {[0, 5, 10, 15, 30].map((m) => (
+              <button key={m} className={`chip chip-sm${schedules.data!.toleranceMin === m ? " active" : ""}`} aria-pressed={schedules.data!.toleranceMin === m} disabled={savingTolerance} onClick={() => saveTolerance(m)}>
+                {m} min
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <p className="hint team-link">
         Tu equipo entra en <a href={loginLink}>{loginLink.split("//")[1]}</a> con su cédula y PIN.
       </p>
@@ -179,12 +223,25 @@ export function Employees() {
       ) : (
         <>
           {data.employees.length > 6 && <input className="search" type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar por nombre o cédula" aria-label="Buscar colaborador" />}
+          {selected.size > 0 && (
+            <div className="bulk-bar">
+              <span className="small">{selected.size} seleccionado{selected.size === 1 ? "" : "s"}</span>
+              <button className="btn btn-primary btn-sm" onClick={() => setScheduling({ employees: (data?.employees ?? []).filter((e) => selected.has(e.id)), initial: null })}>
+                Asignar horario
+              </button>
+              <button className="link-btn" onClick={() => setSelected(new Set())}>
+                Limpiar
+              </button>
+            </div>
+          )}
           <div className="card flush">
             <table className="table">
               <thead>
                 <tr>
+                  <th aria-label="Seleccionar" />
                   <th>Nombre</th>
                   <th>Cédula</th>
+                  <th>Horario</th>
                   <th>Estado</th>
                   <th className="right">Acciones</th>
                 </tr>
@@ -192,8 +249,20 @@ export function Employees() {
               <tbody>
                 {employees.map((e) => (
                   <tr key={e.id} className={e.active ? "" : "inactive"}>
+                    <td className="select-cell">
+                      {e.active && <input type="checkbox" checked={selected.has(e.id)} onChange={() => toggleSelected(e.id)} aria-label={`Seleccionar a ${e.name}`} />}
+                    </td>
                     <td data-label="Nombre">{e.name}</td>
                     <td data-label="Cédula">{e.cedula}</td>
+                    <td data-label="Horario">
+                      {e.active ? (
+                        <button className="link-btn schedule-link" onClick={() => setScheduling({ employees: [e], initial: weekOf(e.id) })}>
+                          {weekOf(e.id) ? summarizeWeek(weekOf(e.id)) : "Asignar"}
+                        </button>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
+                    </td>
                     <td data-label="Estado">{e.active ? <span className="badge st-in">Activo</span> : <span className="badge st-none">Inactivo</span>}</td>
                     <td className="right actions">
                       {e.active && (
@@ -216,6 +285,19 @@ export function Employees() {
         <label className="check small">
           <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} /> Mostrar inactivos ({inactiveCount})
         </label>
+      )}
+
+      {scheduling && (
+        <ScheduleEditor
+          employees={scheduling.employees}
+          initial={scheduling.initial}
+          onClose={() => setScheduling(null)}
+          onSaved={() => {
+            setScheduling(null);
+            setSelected(new Set());
+            void schedules.reload();
+          }}
+        />
       )}
 
       {bulkOpen && (

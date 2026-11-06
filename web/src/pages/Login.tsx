@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { Logo } from "../components/Logo";
+import { PasswordInput } from "../components/PasswordInput";
 import { ErrorBanner } from "../components/ui";
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
 
 function stored(key: string): string {
@@ -30,6 +31,7 @@ export function Login() {
   const [error, setError] = useState<string | null>(null);
   const [requesting, setRequesting] = useState(false);
   const [requested, setRequested] = useState(false);
+  const [locked, setLocked] = useState(false);
 
   useEffect(() => {
     if (codeParam) {
@@ -45,7 +47,7 @@ export function Login() {
   const entering = busy || (!!session && !authError);
 
   async function requestPin() {
-    setError(null);
+    if (!locked) setError(null);
     setRequested(false);
     if (!code.trim() || !cedula.trim()) {
       setEditingCode(!code.trim());
@@ -66,10 +68,12 @@ export function Login() {
   async function attempt(fn: () => Promise<void>) {
     setBusy(true);
     setError(null);
+    setLocked(false);
     try {
       await fn();
     } catch (err) {
       setError((err as Error).message);
+      setLocked(err instanceof ApiError && err.code === "pin_locked");
       setPin("");
     } finally {
       setBusy(false);
@@ -105,10 +109,10 @@ export function Login() {
 
       <div className="auth-card">
         <div className="segmented" role="tablist">
-          <button role="tab" aria-selected={mode === "employee"} className={mode === "employee" ? "active" : ""} onClick={() => setMode("employee")}>
+          <button role="tab" aria-selected={mode === "employee"} className={mode === "employee" ? "active" : ""} onClick={() => { setMode("employee"); setLocked(false); }}>
             Soy colaborador
           </button>
-          <button role="tab" aria-selected={mode === "admin"} className={mode === "admin" ? "active" : ""} onClick={() => setMode("admin")}>
+          <button role="tab" aria-selected={mode === "admin"} className={mode === "admin" ? "active" : ""} onClick={() => { setMode("admin"); setLocked(false); }}>
             Soy RRHH
           </button>
         </div>
@@ -119,7 +123,7 @@ export function Login() {
               {editingCode ? (
                 <label>
                   Código de empresa
-                  <input value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} autoCapitalize="characters" autoComplete="organization" placeholder="EMPRESAA" required autoFocus />
+                  <input value={code} onChange={(e) => { setCode(e.target.value.toUpperCase()); setLocked(false); }} autoCapitalize="characters" autoComplete="organization" placeholder="EMPRESAA" required autoFocus />
                 </label>
               ) : (
                 <div className="known-company">
@@ -132,12 +136,9 @@ export function Login() {
               )}
               <label>
                 Cédula
-                <input value={cedula} onChange={(e) => setCedula(e.target.value)} inputMode="numeric" autoComplete="username" placeholder="12345678" required autoFocus={!editingCode && !cedula} />
+                <input value={cedula} onChange={(e) => { setCedula(e.target.value); setLocked(false); }} inputMode="numeric" autoComplete="username" placeholder="12345678" required autoFocus={!editingCode && !cedula} />
               </label>
-              <label>
-                PIN
-                <input className="pin-input" value={pin} onChange={(e) => changePin(e.target.value)} type="password" inputMode="numeric" autoComplete="current-password" placeholder="••••••" required autoFocus={!editingCode && !!cedula} />
-              </label>
+              <PasswordInput label="PIN" name="PIN" className="pin-input" value={pin} onChange={(e) => changePin(e.target.value)} inputMode="numeric" autoComplete="current-password" placeholder="••••••" required autoFocus={!editingCode && !!cedula} />
             </>
           ) : (
             <>
@@ -145,14 +146,11 @@ export function Login() {
                 Correo
                 <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" autoComplete="email" required autoFocus />
               </label>
-              <label>
-                Contraseña
-                <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" autoComplete="current-password" required />
-              </label>
+              <PasswordInput label="Contraseña" name="contraseña" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
             </>
           )}
           <ErrorBanner error={error ?? authError} />
-          <button className="btn btn-primary btn-block" disabled={entering} aria-busy={entering}>
+          <button className={`btn btn-block ${locked ? "btn-ghost" : "btn-primary"}`} disabled={entering || (locked && !pin)} aria-busy={entering}>
             {entering && <span className="btn-spinner" aria-hidden />}
             {entering ? "Entrando…" : "Entrar"}
           </button>
@@ -169,9 +167,9 @@ export function Login() {
                 Listo. Avisamos a Recursos Humanos: ellos te darán tu PIN.
               </div>
             ) : (
-              <button type="button" className="link-btn" onClick={requestPin} disabled={requesting}>
+              <button type="button" className={locked ? "btn btn-primary btn-block" : "link-btn"} onClick={requestPin} disabled={requesting}>
                 {requesting && <span className="btn-spinner" aria-hidden />}
-                {requesting ? "Enviando solicitud…" : "¿No tienes PIN? Solicítalo a RRHH"}
+                {requesting ? "Enviando solicitud…" : locked ? "Contactar a RRHH para un PIN nuevo" : "¿No tienes PIN? Solicítalo a RRHH"}
               </button>
             )}
           </div>

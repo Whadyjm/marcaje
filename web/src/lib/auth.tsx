@@ -1,4 +1,4 @@
-import { employeeEmail, normalizeCedula, normalizeCompanyCode } from "@domain/identity.ts";
+import { normalizeCedula, normalizeCompanyCode } from "@domain/identity.ts";
 import { isAuthRetryableFetchError } from "@supabase/supabase-js";
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { api, ApiError, type SessionInfo } from "./api";
@@ -145,8 +145,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const code = normalizeCompanyCode(companyCode);
     const ced = normalizeCedula(cedula);
     if (!code || !ced) throw new Error("Completa el código de empresa y tu cédula.");
-    const { error } = await supabase.auth.signInWithPassword({ email: employeeEmail(code, ced), password: pin.trim() });
-    if (error) throw new Error(loginMessage(error, "Código de empresa, cédula o PIN incorrectos."));
+    // Pasa por el backend: ahí se cuentan los intentos y se bloquea la cuenta.
+    const { accessToken, refreshToken } = await api.employeeLogin({ companyCode: code, cedula: ced, pin: pin.trim() });
+    const { error } = await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
+    if (error) throw new Error(loginMessage(error, "No se pudo iniciar la sesión."));
     try {
       localStorage.setItem("marcaje.companyCode", code);
       localStorage.setItem("marcaje.cedula", ced);

@@ -4,14 +4,15 @@
  *   - local:      Node → scripts/dev-server.ts
  *
  * Rutas (todas bajo /api):
- *   público      POST /register, POST /pin-requests, GET /health
+ *   público      POST /register, POST /auth/employee-login, POST /pin-requests, GET /health
  *   cualquiera   GET  /session
- *   colaborador  GET  /me/today, POST /me/punches/sync
+ *   colaborador  GET  /me/today, POST /me/punches/sync, /me/shift-changes
  *   RRHH         /admin/employees, /admin/day, /admin/shifts, /admin/review-queue,
- *                /admin/punch-conflicts, /admin/pin-requests, /admin/report(.csv)
+ *                /admin/punch-conflicts, /admin/pin-requests, /admin/schedules,
+ *                /admin/settings, /admin/shift-changes, /admin/report(.csv)
  */
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
 import { adminOf, authenticate, employeeOf, requireRole, type AppEnv } from "./auth.ts";
@@ -20,8 +21,10 @@ import { dayStatus, type DayStatus } from "./domain/day.ts";
 import { resolvePunchTime } from "./domain/deferred.ts";
 import { breakdownShift, minutesToHours } from "./domain/hours.ts";
 import { EMPLOYEE_EMAIL_DOMAIN, employeeEmail, isValidCedula, normalizeCedula, normalizeCompanyCode } from "./domain/identity.ts";
+import { attemptKey, hashPin, MAX_PIN_ATTEMPTS, newAuthSecret, verifyPin } from "./domain/pin.ts";
 import { weekOf } from "./domain/periods.ts";
 import { alertWindow, buildPeriodReport } from "./domain/report.ts";
+import { applyOverride, assessAttendance, DEFAULT_TOLERANCE_MIN, scheduleOn, weekdayOf, WEEKDAYS, type DaySchedule, type ScheduleVersion, type WeekSchedule } from "./domain/schedule.ts";
 import { addDays, daysBetweenInclusive, isValidDate, localDateOf, startOfLocalDay, todayInCaracas } from "./domain/time.ts";
 import { dbError, HttpError, parse } from "./http.ts";
 
@@ -149,6 +152,54 @@ function parsePeriod(query: Record<string, string | undefined>) {
   if (from > to) throw new HttpError(422, "La fecha inicial debe ser anterior o igual a la final.");
   if (daysBetweenInclusive(from, to) > MAX_PERIOD_DAYS) throw new HttpError(422, `El período no puede superar ${MAX_PERIOD_DAYS} días.`);
   return { from, to };
+}
+
+const timeOfDay = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "hora inválida (HH:mm)");
+const daySchedule = z
+  .object({ start: timeOfDay, end: timeOfDay })
+  .strict()
+  .refine((d) => d.start !== d.end, "La entrada y la salida no pueden ser a la misma hora.");
+const weekSchedule = z
+  .object(Object.fromEntries(WEEKDAYS.map((d) => [d, daySchedule.optional()])))
+  .strict()
+  .refine((w) => Object.values(w).some(Boolean), "Elige al menos un día.");
+
+const SHIFT_CHANGE_MAX_DAYS = 90;
+const INVALID_LOGIN = "Código de empresa, cédula o PIN incorrectos.";
+const LOCKED_LOGIN = "Tu cuenta quedó bloqueada por 5 intentos fallidos. Espera 15 minutos o pide a RRHH un PIN nuevo.";
+
+interface ShiftChangeRow {
+  id: string;
+  employee_id: string;
+  work_date: string;
+  from_start: string | null;
+  from_end: string | null;
+  to_start: string | null;
+  to_end: string | null;
+  reason: string;
+  status: "pending" | "approved" | "rejected" | "cancelled";
+  decision_note: string | null;
+  decided_by_name: string | null;
+  decided_at: string | null;
+  created_at: string;
+  employees?: { name: string; cedula: string } | null;
+}
+const SHIFT_CHANGE_COLS = "id, employee_id, work_date, from_start, from_end, to_start, to_end, reason, status, decision_note, decided_by_name, decided_at, created_at";
+
+function serializeShiftChange(r: ShiftChangeRow) {
+  return {
+    id: r.id,
+    employee: r.employees ?? undefined,
+    workDate: r.work_date,
+    from: r.from_start && r.from_end ? { start: r.from_start, end: r.from_end } : null,
+    to: r.to_start && r.to_end ? { start: r.to_start, end: r.to_end } : null,
+    reason: r.reason,
+    status: r.status,
+    decisionNote: r.decision_note,
+    decidedBy: r.decided_by_name,
+    decidedAt: r.decided_at,
+    createdAt: r.created_at,
+  };
 }
 
 const SYNC_MAX_EVENTS = 200;
@@ -285,6 +336,61 @@ export function createApp(config: AppConfig) {
     };
   }
 
+  /** Versiones de horario vigentes hasta una fecha, por colaborador. */
+  async function fetchScheduleVersions(companyId: string, upTo: string) {
+    const out = new Map<string, ScheduleVersion[]>();
+    for (let offset = 0; ; offset += PAGE_SIZE) {
+      const { data, error } = await db
+        .from("employee_schedules")
+        .select("employee_id, effective_from, week")
+        .eq("company_id", companyId)
+        .lte("effective_from", upTo)
+        .order("employee_id")
+        .order("effective_from")
+        .range(offset, offset + PAGE_SIZE - 1);
+      if (error) throw dbError(error, "horarios");
+      const rows = data as { employee_id: string; effective_from: string; week: WeekSchedule | null }[];
+      for (const r of rows) {
+        const list = out.get(r.employee_id) ?? [];
+        list.push({ effectiveFrom: r.effective_from, week: r.week });
+        out.set(r.employee_id, list);
+      }
+      if (rows.length < PAGE_SIZE) return out;
+    }
+  }
+
+  async function companyTolerance(companyId: string) {
+    const { data, error } = await db.from("companies").select("late_tolerance_min").eq("id", companyId).single();
+    if (error) throw dbError(error, "empresa");
+    return (data as { late_tolerance_min: number | null }).late_tolerance_min ?? DEFAULT_TOLERANCE_MIN;
+  }
+
+  /** Cambios de turno aprobados para una fecha, por colaborador. El último aprobado manda. */
+  async function fetchOverrides(companyId: string, date: string) {
+    const { data, error } = await db
+      .from("shift_change_requests")
+      .select("employee_id, to_start, to_end")
+      .eq("company_id", companyId)
+      .eq("work_date", date)
+      .eq("status", "approved")
+      .order("decided_at");
+    if (error) throw dbError(error, "cambios de turno");
+    const out = new Map<string, DaySchedule | null>();
+    for (const r of data as { employee_id: string; to_start: string | null; to_end: string | null }[]) {
+      out.set(r.employee_id, r.to_start && r.to_end ? { start: r.to_start, end: r.to_end } : null);
+    }
+    return out;
+  }
+
+  /** Guarda el PIN y deja una contraseña de Auth aleatoria, que nadie conoce. */
+  async function storePin(employeeId: string, pin: string, authSecret: string) {
+    const { salt, pinHash } = await hashPin(pin);
+    const { error } = await db
+      .from("employee_pins")
+      .upsert({ employee_id: employeeId, salt, pin_hash: pinHash, auth_secret: authSecret, updated_at: now().toISOString() }, { onConflict: "employee_id" });
+    if (error) throw dbError(error, "PIN");
+  }
+
   /** Cuántos marcajes esperan a RRHH, de cualquier fecha. */
   async function pendingCounts(companyId: string) {
     const [reviews, conflicts] = await Promise.all([
@@ -294,6 +400,24 @@ export function createApp(config: AppConfig) {
     if (reviews.error) throw dbError(reviews.error, "revisión");
     if (conflicts.error) throw dbError(conflicts.error, "conflictos");
     return { review: reviews.count ?? 0, conflicts: conflicts.count ?? 0 };
+  }
+
+  /**
+   * Límite de uso por IP (y opcionalmente por otra clave) para rutas públicas.
+   * Falla cerrado: si no se puede verificar el límite, no se atiende la solicitud.
+   */
+  async function rateLimit(c: Context, scope: string, max: number, windowSeconds: number, extra?: string) {
+    const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ?? "desconocida";
+    const key = `${scope}:${ip}${extra ? `:${extra}` : ""}`;
+    const { data, error } = await db.rpc("rate_limit_hit", { p_key: key, p_max: max, p_window_seconds: windowSeconds });
+    if (error) {
+      console.error("[rate-limit]", error);
+      throw new HttpError(500, "No se pudo procesar la solicitud.");
+    }
+    if (data !== true) {
+      c.header("Retry-After", String(windowSeconds));
+      throw new HttpError(429, "Demasiados intentos. Espera un momento e inténtalo de nuevo.", "rate_limited");
+    }
   }
 
   // ---- público -------------------------------------------------------------
@@ -307,6 +431,7 @@ export function createApp(config: AppConfig) {
   });
 
   app.post("/register", async (c) => {
+    await rateLimit(c, "register", 5, 3600); // 5 cuentas por hora y por IP
     const body = parse(registerSchema, await c.req.json().catch(() => ({})));
     if (body.email.endsWith(`@${EMPLOYEE_EMAIL_DOMAIN}`)) throw new HttpError(422, "Correo inválido.");
 
@@ -350,10 +475,62 @@ export function createApp(config: AppConfig) {
   });
 
   /**
+   * Entrada del colaborador. El contador se reserva antes de verificar, y funciona igual
+   * exista o no la persona: ni el error ni el bloqueo revelan quién trabaja en la empresa.
+   */
+  app.post("/auth/employee-login", async (c) => {
+    await rateLimit(c, "employee-login", 300, 300); // holgado: un equipo entero puede compartir IP
+    const body = parse(
+      z.object({
+        companyCode: z.string().transform(normalizeCompanyCode).refine((v) => v.length >= 4, "Escribe el código de tu empresa."),
+        cedula: z.string().transform(normalizeCedula).refine(isValidCedula, "Escribe tu cédula."),
+        pin: z.string().regex(/^\d{6}$/, "El PIN tiene 6 dígitos."),
+      }),
+      await c.req.json().catch(() => ({})),
+    );
+    const key = await attemptKey(body.companyCode, body.cedula);
+    const { data: attempt, error: aErr } = await db.rpc("pin_attempt_begin", { p_key: key, p_max: MAX_PIN_ATTEMPTS });
+    if (aErr) throw dbError(aErr, "intentos");
+    const { allowed, remaining } = attempt as { allowed: boolean; remaining?: number };
+    if (!allowed) throw new HttpError(429, LOCKED_LOGIN, "pin_locked");
+
+    const { data: company, error: cErr } = await db.from("companies").select("id").eq("code", body.companyCode).maybeSingle();
+    if (cErr) throw dbError(cErr, "empresa");
+    const { data: emp, error: eErr } = company
+      ? await db.from("employees").select("id").eq("company_id", company.id).eq("cedula", body.cedula).eq("active", true).maybeSingle()
+      : { data: null, error: null };
+    if (eErr) throw dbError(eErr, "colaborador");
+    const { data: stored, error: pErr } = emp ? await db.from("employee_pins").select("salt, pin_hash, auth_secret").eq("employee_id", emp.id).maybeSingle() : { data: null, error: null };
+    if (pErr) throw dbError(pErr, "PIN");
+
+    if (!(await verifyPin(body.pin, stored))) {
+      if (remaining === 0) throw new HttpError(429, LOCKED_LOGIN, "pin_locked");
+      const hint = remaining && remaining <= 2 ? ` Te queda${remaining === 1 ? " 1 intento" : `n ${remaining} intentos`}.` : "";
+      throw new HttpError(401, INVALID_LOGIN + hint, "invalid_login");
+    }
+
+    // Cliente descartable: iniciar sesión en el compartido haría que sus consultas usaran este usuario.
+    const authClient = createClient(config.supabaseUrl, config.serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+      // deno-lint-ignore no-explicit-any
+      ...(config.wsTransport ? { realtime: { transport: config.wsTransport as any } } : {}),
+    });
+    const { data: signed, error: sErr } = await authClient.auth.signInWithPassword({ email: employeeEmail(body.companyCode, body.cedula), password: stored!.auth_secret });
+    if (sErr || !signed.session) {
+      console.error("[employee-login] sesión:", sErr);
+      throw new HttpError(500, "No se pudo iniciar la sesión. Inténtalo de nuevo.");
+    }
+    const { error: clearErr } = await db.rpc("pin_attempt_clear", { p_key: key });
+    if (clearErr) console.error("[employee-login] contador sin limpiar:", clearErr);
+    return c.json({ accessToken: signed.session.access_token, refreshToken: signed.session.refresh_token });
+  });
+
+  /**
    * Solicitud de PIN desde el login. Es pública, así que responde lo mismo exista o
    * no la persona: nadie puede usarla para averiguar quién trabaja en una empresa.
    */
   app.post("/pin-requests", async (c) => {
+    await rateLimit(c, "pin-requests", 10, 600); // 10 solicitudes cada 10 minutos por IP
     const body = parse(
       z.object({
         companyCode: z.string().transform(normalizeCompanyCode).refine((v) => v.length >= 4, "Escribe el código de tu empresa."),
@@ -393,11 +570,18 @@ export function createApp(config: AppConfig) {
     const t = now();
     const today = todayInCaracas(t);
     const week = weekOf(today);
-    const [{ data: open, error: oErr }, shifts] = await Promise.all([
+    const [{ data: open, error: oErr }, shifts, { data: version, error: sErr }, overrides, { data: changes, error: chErr }] = await Promise.all([
       db.from("shifts").select(SHIFT_COLS).eq("employee_id", a.employeeId).is("clock_out", null).maybeSingle(),
       fetchShiftsRange(a.company.id, addDays(today, -13), today, SHIFT_COLS, a.employeeId),
+      db.from("employee_schedules").select("week").eq("employee_id", a.employeeId).lte("effective_from", today).order("effective_from", { ascending: false }).limit(1).maybeSingle(),
+      fetchOverrides(a.company.id, today),
+      db.from("shift_change_requests").select(SHIFT_CHANGE_COLS).eq("employee_id", a.employeeId).order("created_at", { ascending: false }).limit(10),
     ]);
+    if (chErr) throw dbError(chErr, "cambios de turno");
     if (oErr) throw dbError(oErr, "turnos");
+    if (sErr) throw dbError(sErr, "horarios");
+    const schedule = applyOverride((version?.week ?? null) as WeekSchedule | null, today, overrides.has(a.employeeId) ? overrides.get(a.employeeId)! : undefined);
+    const expected = !schedule ? { kind: "none" as const } : schedule[weekdayOf(today)] ? { kind: "shift" as const, ...schedule[weekdayOf(today)] } : { kind: "rest" as const };
 
     const weekShifts = shifts.filter((s) => s.clock_out && !s.needs_review && localDateOf(s.clock_in) >= week.from);
     const weekMinutes = weekShifts.reduce(
@@ -413,6 +597,8 @@ export function createApp(config: AppConfig) {
     return c.json({
       today,
       serverTime: t.toISOString(),
+      expected,
+      shiftChanges: (changes as ShiftChangeRow[]).map(serializeShiftChange),
       openShift: open ? serializeShift(open as ShiftRow, t) : null,
       week: { ...week, totalHours: minutesToHours(weekMinutes.total), overtimeHours: minutesToHours(weekMinutes.overtime) },
       recent: shifts.reverse().map((s) => serializeShift(s, t)),
@@ -466,6 +652,61 @@ export function createApp(config: AppConfig) {
     return c.json({ serverTime: serverNow.toISOString(), results });
   });
 
+  // Cambios de turno
+  me.post("/shift-changes", async (c) => {
+    const a = employeeOf(c.get("actor"));
+    const body = parse(
+      z.object({
+        workDate: dateParam,
+        to: daySchedule.nullable(),
+        reason: z.string({ required_error: "El motivo es obligatorio." }).trim().min(5, "Indica el motivo (mínimo 5 caracteres).").max(300),
+      }),
+      await c.req.json().catch(() => ({})),
+    );
+    const today = todayInCaracas(now());
+    if (body.workDate < today) throw new HttpError(422, "Elige hoy o una fecha futura.");
+    if (body.workDate > addDays(today, SHIFT_CHANGE_MAX_DAYS)) throw new HttpError(422, `Solo puedes solicitarlo con hasta ${SHIFT_CHANGE_MAX_DAYS} días de anticipación.`);
+
+    const [versions, overrides] = await Promise.all([fetchScheduleVersions(a.company.id, body.workDate), fetchOverrides(a.company.id, body.workDate)]);
+    const week = applyOverride(scheduleOn(versions.get(a.employeeId) ?? [], body.workDate), body.workDate, overrides.has(a.employeeId) ? overrides.get(a.employeeId)! : undefined);
+    const current = week?.[weekdayOf(body.workDate)];
+
+    const { data, error } = await db
+      .from("shift_change_requests")
+      .insert({
+        company_id: a.company.id,
+        employee_id: a.employeeId,
+        work_date: body.workDate,
+        from_start: current?.start ?? null,
+        from_end: current?.end ?? null,
+        to_start: body.to?.start ?? null,
+        to_end: body.to?.end ?? null,
+        reason: body.reason,
+      })
+      .select(SHIFT_CHANGE_COLS)
+      .single();
+    if (error) {
+      if (error.code === "23505") throw new HttpError(409, "Ya tienes una solicitud pendiente para ese día.", "duplicate");
+      throw dbError(error, "cambio de turno");
+    }
+    return c.json({ request: serializeShiftChange(data as ShiftChangeRow) }, 201);
+  });
+
+  me.post("/shift-changes/:id/cancel", async (c) => {
+    const a = employeeOf(c.get("actor"));
+    const { data, error } = await db
+      .from("shift_change_requests")
+      .update({ status: "cancelled" })
+      .eq("employee_id", a.employeeId) // solo las propias
+      .eq("id", c.req.param("id"))
+      .eq("status", "pending")
+      .select("id")
+      .maybeSingle();
+    if (error) throw dbError(error, "cambio de turno");
+    if (!data) throw new HttpError(404, "La solicitud ya no está pendiente.");
+    return c.json({ ok: true });
+  });
+
   app.route("/me", me);
 
   // ---- RRHH ----------------------------------------------------------------
@@ -491,9 +732,10 @@ export function createApp(config: AppConfig) {
     if (existing) throw new HttpError(409, "Ya existe un colaborador con esa cédula en la empresa.", "duplicate_cedula");
 
     const pin = generatePin();
+    const authSecret = newAuthSecret();
     const { data: created, error } = await db.auth.admin.createUser({
       email: employeeEmail(a.company.code, body.cedula),
-      password: pin,
+      password: authSecret,
       email_confirm: true,
       user_metadata: { name: body.name, role: "employee" },
     });
@@ -510,6 +752,14 @@ export function createApp(config: AppConfig) {
     if (eErr) {
       await db.auth.admin.deleteUser(created.user.id);
       throw dbError(eErr, "colaborador");
+    }
+    try {
+      await storePin((data as EmployeeRow).id, pin, authSecret);
+    } catch (e) {
+      // Sin PIN no podría entrar nunca: se deshace el alta para reintentarla.
+      await db.from("employees").delete().eq("id", (data as EmployeeRow).id);
+      await db.auth.admin.deleteUser(created.user.id);
+      throw e;
     }
     // El PIN se muestra una sola vez; no lo guardamos en claro en ningún lado.
     return c.json({ employee: serializeEmployee(data as EmployeeRow), pin, companyCode: a.company.code }, 201);
@@ -536,12 +786,90 @@ export function createApp(config: AppConfig) {
     const emp = await getEmployee(a.company.id, c.req.param("id"));
     if (!emp.user_id) throw new HttpError(409, "El colaborador no tiene acceso configurado.");
     const pin = generatePin();
-    const { error } = await db.auth.admin.updateUserById(emp.user_id, { password: pin });
+    const authSecret = newAuthSecret();
+    const { error } = await db.auth.admin.updateUserById(emp.user_id, { password: authSecret });
     if (error) throw new HttpError(500, "No se pudo restablecer el PIN.");
+    await storePin(emp.id, pin, authSecret);
+    // Un PIN nuevo levanta el bloqueo por intentos fallidos.
+    const { error: clearErr } = await db.rpc("pin_attempt_clear", { p_key: await attemptKey(a.company.code, emp.cedula) });
+    if (clearErr) console.error("[reset-pin] bloqueo sin limpiar:", clearErr);
+    // Con PIN nuevo, se levanta cualquier bloqueo por intentos fallidos.
+    await db.from("auth_attempts").delete().eq("user_id", emp.user_id);
     // Un PIN nuevo atiende cualquier solicitud pendiente de esa persona.
     const { error: reqErr } = await db.from("pin_requests").update({ resolved_at: now().toISOString(), resolved_by: a.userId }).eq("employee_id", emp.id).is("resolved_at", null);
     if (reqErr) console.error("[reset-pin] solicitud sin cerrar:", reqErr); // el PIN ya cambió: no se reporta como fallo
     return c.json({ pin, companyCode: a.company.code });
+  });
+
+  // Horario esperado y tolerancia
+  admin.get("/schedules", async (c) => {
+    const a = adminOf(c.get("actor"));
+    const today = todayInCaracas(now());
+    const [versions, toleranceMin] = await Promise.all([fetchScheduleVersions(a.company.id, today), companyTolerance(a.company.id)]);
+    return c.json({
+      toleranceMin,
+      schedules: [...versions.entries()].map(([employeeId, list]) => ({ employeeId, week: scheduleOn(list, today) })),
+    });
+  });
+
+  admin.post("/schedules", async (c) => {
+    const a = adminOf(c.get("actor"));
+    const body = parse(z.object({ employeeIds: z.array(z.string().uuid()).min(1).max(1000), week: weekSchedule.nullable() }), await c.req.json().catch(() => ({})));
+    const ids = [...new Set(body.employeeIds)];
+    const { data: owned, error: oErr } = await db.from("employees").select("id").eq("company_id", a.company.id).in("id", ids);
+    if (oErr) throw dbError(oErr, "colaboradores");
+    if ((owned ?? []).length !== ids.length) throw new HttpError(404, "Colaborador no encontrado."); // aislamiento entre empresas
+
+    const t = now();
+    const { error } = await db.from("employee_schedules").upsert(
+      ids.map((id) => ({ employee_id: id, company_id: a.company.id, effective_from: todayInCaracas(t), week: body.week, created_by: a.userId, updated_at: t.toISOString() })),
+      { onConflict: "employee_id,effective_from" },
+    );
+    if (error) throw dbError(error, "horarios");
+    return c.json({ ok: true });
+  });
+
+  admin.patch("/settings", async (c) => {
+    const a = adminOf(c.get("actor"));
+    const { lateToleranceMin } = parse(z.object({ lateToleranceMin: z.number().int().min(0).max(120) }), await c.req.json().catch(() => ({})));
+    const { error } = await db.from("companies").update({ late_tolerance_min: lateToleranceMin }).eq("id", a.company.id);
+    if (error) throw dbError(error, "empresa");
+    return c.json({ toleranceMin: lateToleranceMin });
+  });
+
+  // Cambios de turno por decidir
+  admin.get("/shift-changes", async (c) => {
+    const a = adminOf(c.get("actor"));
+    const { data, error } = await db
+      .from("shift_change_requests")
+      .select(`${SHIFT_CHANGE_COLS}, employees (name, cedula)`)
+      .eq("company_id", a.company.id)
+      .eq("status", "pending")
+      .order("work_date");
+    if (error) throw dbError(error, "cambios de turno");
+    return c.json({ requests: (data as unknown as ShiftChangeRow[]).map(serializeShiftChange) });
+  });
+
+  admin.post("/shift-changes/:id/decide", async (c) => {
+    const a = adminOf(c.get("actor"));
+    const body = parse(z.object({ approve: z.boolean(), note: z.string().trim().max(300).optional() }), await c.req.json().catch(() => ({})));
+    const today = todayInCaracas(now());
+    const { data: current, error: rErr } = await db.from("shift_change_requests").select("work_date").eq("company_id", a.company.id).eq("id", c.req.param("id")).eq("status", "pending").maybeSingle();
+    if (rErr) throw dbError(rErr, "cambio de turno");
+    if (!current) throw new HttpError(404, "La solicitud ya no está pendiente.");
+    if (body.approve && current.work_date < today) throw new HttpError(422, "Esa fecha ya pasó: solo se puede rechazar.");
+
+    const { data, error } = await db
+      .from("shift_change_requests")
+      .update({ status: body.approve ? "approved" : "rejected", decision_note: body.note || null, decided_by: a.userId, decided_by_name: a.name, decided_at: now().toISOString() })
+      .eq("company_id", a.company.id) // aislamiento entre empresas
+      .eq("id", c.req.param("id"))
+      .eq("status", "pending") // dos RRHH a la vez: decide el primero
+      .select(SHIFT_CHANGE_COLS)
+      .maybeSingle();
+    if (error) throw dbError(error, "cambio de turno");
+    if (!data) throw new HttpError(404, "La solicitud ya no está pendiente.");
+    return c.json({ request: serializeShiftChange(data as ShiftChangeRow) });
   });
 
   // Solicitudes de PIN
@@ -582,12 +910,15 @@ export function createApp(config: AppConfig) {
     if (!isValidDate(date)) throw new HttpError(422, "Fecha inválida.");
 
     const week = weekOf(date);
-    const [employees, shifts, openRes, { report }, pending] = await Promise.all([
+    const [employees, shifts, openRes, { report }, pending, versions, toleranceMin, overrides] = await Promise.all([
       fetchEmployees(a.company.id, true),
       fetchShiftsRange(a.company.id, date, date, SHIFT_FULL),
       db.from("shifts").select(SHIFT_FULL).eq("company_id", a.company.id).is("clock_out", null),
       loadReport(a.company.id, week.from, week.to),
       pendingCounts(a.company.id),
+      fetchScheduleVersions(a.company.id, date),
+      companyTolerance(a.company.id),
+      fetchOverrides(a.company.id, date),
     ]);
     if (openRes.error) throw dbError(openRes.error, "turnos");
     const open = openRes.data as unknown as ShiftRow[];
@@ -605,6 +936,14 @@ export function createApp(config: AppConfig) {
       return {
         employee: serializeEmployee(e),
         status,
+        attendance: assessAttendance({
+          date,
+          now: t,
+          week: applyOverride(scheduleOn(versions.get(e.id) ?? [], date), date, overrides.has(e.id) ? overrides.get(e.id)! : undefined),
+          toleranceMin,
+          shifts: ofDay.map((s) => ({ clockIn: s.clock_in, clockOut: s.clock_out })),
+          hasOpenShift: date === today && !!openShift,
+        }),
         shifts: ofDay.map((s) => serializeShift(s, t)),
         // Solo mostramos el turno abierto si es relevante para el día consultado.
         openShift: openShift && (date === today || localDateOf(openShift.clock_in) === date) ? serializeShift(openShift, t) : null,
