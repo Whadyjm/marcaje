@@ -7,6 +7,7 @@ import { configError } from "./lib/supabase";
 import { EmployeeHome } from "./pages/EmployeeHome";
 import { Login } from "./pages/Login";
 import { Register } from "./pages/Register";
+import { Decisions } from "./pages/admin/Decisions";
 import { Employees } from "./pages/admin/Employees";
 import { Period } from "./pages/admin/Period";
 import { Shifts } from "./pages/admin/Shifts";
@@ -65,6 +66,7 @@ export function App() {
         <Route path="colaboradores" element={<Employees />} />
         <Route path="marcajes" element={<Shifts />} />
         <Route path="periodo" element={<Period />} />
+        <Route path="decisiones" element={<Decisions />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

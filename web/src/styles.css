@@ -1539,3 +1539,18 @@ textarea:focus {
     animation: none;
   }
 }
+
+/* ---------- bitácora de decisiones ---------- */
+.decision-reason {
+  margin: 4px 0;
+  padding: 6px 10px;
+  background: var(--bg-soft);
+  border-radius: var(--radius-sm);
+}
+@media (max-width: 479px) {
+  /* Cinco secciones en un celular: compactas para que se vean todas. */
+  .tab {
+    padding: 8px 4px;
+    font-size: 0.85rem;
+  }
+}

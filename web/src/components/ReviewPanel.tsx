@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, type Shift } from "../lib/api";
 import { formatDay, formatInstant, localDateOf, localTimeOf } from "../lib/format";
+import { useAutoRefresh } from "../lib/useAutoRefresh";
 import { ShiftEditor } from "./ShiftEditor";
 import { ErrorBanner, useAsync } from "./ui";
 
@@ -8,8 +9,9 @@ const APPROVE_REASON = "Aprobado por RRHH: hora confirmada";
 
 /** Lo único que requiere a RRHH del modo sin conexión: horas dudosas y marcajes que no encajaron. */
 export function ReviewPanel({ onChanged }: { onChanged: () => void }) {
-  const { data, error, reload } = useAsync(() => api.reviewQueue(), []);
+  const { data, error, reload, refresh } = useAsync(() => api.reviewQueue(), []);
   const [editing, setEditing] = useState<Shift | null>(null);
+  useAutoRefresh(refresh, { paused: !!editing });
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 

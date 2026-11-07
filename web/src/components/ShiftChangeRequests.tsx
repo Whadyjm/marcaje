@@ -1,35 +1,27 @@
 import { useState } from "react";
 import { api, type ShiftChange } from "../lib/api";
 import { formatDay } from "../lib/format";
+import { useAutoRefresh } from "../lib/useAutoRefresh";
 import { PIN_REQUESTS_CHANGED } from "./AdminLayout";
-import { ErrorBanner, Modal, useAsync } from "./ui";
+import { DecisionModal } from "./DecisionModal";
+import { useAsync } from "./ui";
 
-const REJECT_NOTES = ["No hay cobertura ese día", "Fuera del plazo de solicitud", "Hablemos en persona"];
+const APPROVE_REASONS = ["Hay cobertura ese día", "Acordado con el supervisor", "Motivo justificado"];
+const REJECT_REASONS = ["No hay cobertura ese día", "Fuera del plazo de solicitud", "Hablemos en persona"];
 
 export const describeShift = (t: { start: string; end: string } | null) => (t ? `${t.start}–${t.end}` : "Día libre");
 
-/** Panel de RRHH: aprobar reemplaza el horario de esa fecha; rechazar admite una nota. */
+/** Panel de RRHH: aprobar reemplaza el horario de esa fecha. Cada decisión queda en la bitácora. */
 export function ShiftChangeRequests() {
-  const { data, reload } = useAsync(() => api.shiftChanges(), []);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [rejecting, setRejecting] = useState<ShiftChange | null>(null);
-  const [note, setNote] = useState("");
+  const { data, reload, refresh } = useAsync(() => api.shiftChanges(), []);
+  const [deciding, setDeciding] = useState<{ request: ShiftChange; approve: boolean } | null>(null);
+  useAutoRefresh(refresh, { paused: !!deciding });
 
-  async function decide(r: ShiftChange, approve: boolean, decisionNote?: string) {
-    setBusy(r.id);
-    setError(null);
-    try {
-      await api.decideShiftChange(r.id, { approve, note: decisionNote?.trim() || undefined });
-      setRejecting(null);
-      setNote("");
-      await reload();
-      window.dispatchEvent(new Event(PIN_REQUESTS_CHANGED));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(null);
-    }
+  async function decide(reason: string) {
+    await api.decideShiftChange(deciding!.request.id, { approve: deciding!.approve, note: reason });
+    setDeciding(null);
+    await reload();
+    window.dispatchEvent(new Event(PIN_REQUESTS_CHANGED));
   }
 
   if (!data?.requests.length) return null;
@@ -38,22 +30,21 @@ export function ShiftChangeRequests() {
     <section className="card pin-requests">
       <h2 className="h3">Cambios de turno por decidir · {data.requests.length}</h2>
       <p className="muted small">Al aprobar, cambia el horario esperado solo de ese día.</p>
-      <ErrorBanner error={error} />
       <ul className="list">
         {data.requests.map((r) => (
           <li key={r.id} className="list-row">
             <div className="grow">
               <strong>{r.employee?.name}</strong> · {formatDay(r.workDate)}
               <div className="small">
-                {r.from ? describeShift(r.from) : "Sin horario"} → <strong>{describeShift(r.to)}</strong>
+                {r.from ? describeShift(r.from) : "Sin turno"} → <strong>{describeShift(r.to)}</strong>
               </div>
               <div className="muted small">“{r.reason}”</div>
             </div>
             <div className="row-actions">
-              <button className="btn btn-primary btn-sm" disabled={busy === r.id} onClick={() => decide(r, true)}>
+              <button className="btn btn-primary btn-sm" onClick={() => setDeciding({ request: r, approve: true })}>
                 Aprobar
               </button>
-              <button className="btn btn-ghost btn-sm" disabled={busy === r.id} onClick={() => setRejecting(r)}>
+              <button className="btn btn-ghost btn-sm" onClick={() => setDeciding({ request: r, approve: false })}>
                 Rechazar
               </button>
             </div>
@@ -61,38 +52,15 @@ export function ShiftChangeRequests() {
         ))}
       </ul>
 
-      {rejecting && (
-        <Modal
-          title={`Rechazar · ${rejecting.employee?.name}`}
-          onClose={() => setRejecting(null)}
-          footer={
-            <>
-              <button className="btn btn-ghost" onClick={() => setRejecting(null)}>
-                Cancelar
-              </button>
-              <button className="btn btn-primary" disabled={busy === rejecting.id} onClick={() => decide(rejecting, false, note)}>
-                Rechazar solicitud
-              </button>
-            </>
-          }
-        >
-          <div className="form">
-            <div className="field">
-              <span className="field-label">
-                Nota para el colaborador <span className="req">opcional</span>
-              </span>
-              <div className="chips">
-                {REJECT_NOTES.map((n) => (
-                  <button key={n} type="button" className={`chip chip-sm${note === n ? " active" : ""}`} onClick={() => setNote(n)}>
-                    {n}
-                  </button>
-                ))}
-              </div>
-              <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} maxLength={300} aria-label="Nota" />
-            </div>
-            <ErrorBanner error={error} />
-          </div>
-        </Modal>
+      {deciding && (
+        <DecisionModal
+          title={`${deciding.approve ? "Aprobar" : "Rechazar"} · ${deciding.request.employee?.name}`}
+          summary={`${formatDay(deciding.request.workDate)}: ${deciding.request.from ? describeShift(deciding.request.from) : "Sin turno"} → ${describeShift(deciding.request.to)}`}
+          reasons={deciding.approve ? APPROVE_REASONS : REJECT_REASONS}
+          confirmLabel={deciding.approve ? "Aprobar solicitud" : "Rechazar solicitud"}
+          onClose={() => setDeciding(null)}
+          onConfirm={decide}
+        />
       )}
     </section>
   );

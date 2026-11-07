@@ -1,30 +1,27 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet } from "react-router-dom";
 import { api } from "../lib/api";
+import { useAutoRefresh } from "../lib/useAutoRefresh";
 import { useAdmin } from "../lib/auth";
 import { Logo } from "./Logo";
 import { LogoutButton } from "./LogoutButton";
 
-const PIN_POLL_MS = 60_000;
 /** Lo dispara Equipo al atender una solicitud, para que la campana se actualice de una vez. */
 export const PIN_REQUESTS_CHANGED = "marcaje:pin-requests-changed";
 
 function usePinRequestCount() {
   const [count, setCount] = useState(0);
+  const load = () => {
+    Promise.all([api.pinRequests(), api.shiftChanges()])
+      .then(([pins, changes]) => setCount(pins.requests.length + changes.requests.length))
+      .catch(() => {}); // es un aviso: se reintenta en el siguiente ciclo
+  };
+  useAutoRefresh(load);
   useEffect(() => {
-    const load = () => {
-      Promise.all([api.pinRequests(), api.shiftChanges()])
-        .then(([pins, changes]) => setCount(pins.requests.length + changes.requests.length))
-        .catch(() => {}); // es un aviso: se reintenta en el siguiente ciclo
-    };
     load();
-    const id = setInterval(load, PIN_POLL_MS);
     window.addEventListener(PIN_REQUESTS_CHANGED, load);
-    return () => {
-      clearInterval(id);
-      window.removeEventListener(PIN_REQUESTS_CHANGED, load);
-    };
-  }, []);
+    return () => window.removeEventListener(PIN_REQUESTS_CHANGED, load);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   return count;
 }
 
@@ -33,6 +30,7 @@ const NAV = [
   { to: "/admin/marcajes", label: "Marcajes" },
   { to: "/admin/periodo", label: "Período" },
   { to: "/admin/colaboradores", label: "Equipo" },
+  { to: "/admin/decisiones", label: "Decisiones" },
 ];
 
 export function AdminLayout() {

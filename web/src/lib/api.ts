@@ -1,3 +1,4 @@
+import type { Decision, DecisionOutcome } from "@domain/decisions.ts";
 import type { Attendance, DaySchedule, WeekSchedule } from "@domain/schedule.ts";
 import type { QueuedPunch } from "./punchQueue";
 import { API_URL, supabase } from "./supabase";
@@ -174,7 +175,7 @@ export interface PunchConflict {
   reason: string;
 }
 
-export type { Attendance, WeekSchedule };
+export type { Attendance, Decision, DecisionOutcome, WeekSchedule };
 
 export type ExpectedToday = { kind: "none" } | { kind: "rest" } | ({ kind: "shift" } & DaySchedule);
 
@@ -215,7 +216,7 @@ export const api = {
   requestShiftChange: (body: { workDate: string; to: DaySchedule | null; reason: string }) => request<{ request: ShiftChange }>("POST", "/me/shift-changes", body),
   cancelShiftChange: (id: string) => request<{ ok: true }>("POST", `/me/shift-changes/${id}/cancel`),
   shiftChanges: () => request<{ requests: ShiftChange[] }>("GET", "/admin/shift-changes"),
-  decideShiftChange: (id: string, body: { approve: boolean; note?: string }) => request<{ request: ShiftChange }>("POST", `/admin/shift-changes/${id}/decide`, body),
+  decideShiftChange: (id: string, body: { approve: boolean; note: string }) => request<{ request: ShiftChange }>("POST", `/admin/shift-changes/${id}/decide`, body),
   requestPin: (body: { companyCode: string; cedula: string }) => request<{ ok: true }>("POST", "/pin-requests", body),
 
   // colaborador
@@ -240,7 +241,8 @@ export const api = {
   saveSchedules: (body: { employeeIds: string[]; week: WeekSchedule | null }) => request<{ ok: true }>("POST", "/admin/schedules", body),
   saveTolerance: (lateToleranceMin: number) => request<{ toleranceMin: number }>("PATCH", "/admin/settings", { lateToleranceMin }),
   pinRequests: () => request<{ requests: PinRequest[] }>("GET", "/admin/pin-requests"),
-  dismissPinRequest: (id: string) => request<{ ok: true }>("POST", `/admin/pin-requests/${id}/dismiss`),
+  dismissPinRequest: (id: string, note: string) => request<{ ok: true }>("POST", `/admin/pin-requests/${id}/dismiss`, { note }),
+  decisions: (from: string, to: string) => request<{ decisions: Decision[] }>("GET", `/admin/decisions?${qs({ from, to })}`),
   reviewQueue: () => request<{ shifts: Shift[]; conflicts: PunchConflict[] }>("GET", "/admin/review-queue"),
   dismissConflict: (id: string) => request<{ ok: true }>("POST", `/admin/punch-conflicts/${id}/dismiss`),
   report: (from: string, to: string) => request<PeriodReport>("GET", `/admin/report?${qs({ from, to })}`),

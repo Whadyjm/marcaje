@@ -121,6 +121,14 @@ describe("horarios", () => {
   });
 });
 
+describe("decisiones sobre solicitudes de PIN", () => {
+  it("solo admite resultados conocidos", async () => {
+    const r = await db.query<any>(`insert into public.pin_requests(company_id, employee_id) values ($1,$2) returning id`, [company, employee]);
+    await expect(db.query(`update public.pin_requests set resolution='otra' where id=$1`, [r.rows[0].id])).rejects.toMatchObject({ code: "23514" });
+    await expect(db.query(`update public.pin_requests set resolution='dismissed', resolution_note='No la reconozco' where id=$1`, [r.rows[0].id])).resolves.toBeTruthy();
+  });
+});
+
 describe("solicitudes de PIN", () => {
   const request = () => db.query(`insert into public.pin_requests(company_id, employee_id) values ($1,$2)`, [company, employee]);
 

@@ -61,6 +61,7 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const seq = useRef(0);
+  const refreshing = useRef(false);
 
   const reload = useCallback(async () => {
     const id = ++seq.current;
@@ -82,5 +83,33 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {
     reload();
   }, [reload]);
 
-  return { data, error, loading, reload, setData };
+  /**
+   * Actualización en segundo plano: sin spinner, y si falla se conserva lo que hay en
+   * pantalla (se reintenta en el siguiente ciclo). Si funciona, también limpia un error.
+   */
+  const refresh = useCallback(async () => {
+    if (refreshing.current) return;
+    refreshing.current = true;
+    const id = seq.current;
+    try {
+      const d = await fn();
+      if (id === seq.current) {
+        setData(d);
+        setError(null);
+      }
+    } catch {
+      /* se reintenta en el siguiente ciclo */
+    } finally {
+      refreshing.current = false;
+    }
+  }, deps); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Un cambio local manda sobre una consulta que ya iba en camino con datos anteriores. */
+  const setLocalData: typeof setData = useCallback((value) => {
+    seq.current++;
+    setLoading(false);
+    setData(value);
+  }, []);
+
+  return { data, error, loading, reload, refresh, setData: setLocalData };
 }

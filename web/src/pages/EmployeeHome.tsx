@@ -207,7 +207,7 @@ function ShiftChangeList({ changes, offline, onChanged }: { changes: ShiftChange
             <div className="grow">
               <strong>{formatDay(c.workDate)}</strong> · {c.to ? `${c.to.start}–${c.to.end}` : "Día libre"}
               <span className={`badge ${CHANGE_STATUS[c.status].className}`}>{CHANGE_STATUS[c.status].label}</span>
-              <div className="muted small">{c.status === "rejected" && c.decisionNote ? c.decisionNote : c.reason}</div>
+              <div className="muted small">{(c.status === "rejected" || c.status === "approved") && c.decisionNote ? c.decisionNote : c.reason}</div>
             </div>
             {c.status === "pending" && !offline && (
               <button className="link-btn" disabled={busy === c.id} onClick={() => cancel(c.id)}>

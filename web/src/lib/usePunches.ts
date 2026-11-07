@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, type EmployeeToday, type Shift } from "./api";
 import { localDateOf } from "./format";
+import { EMPLOYEE_REFRESH_MS, useAutoRefresh } from "./useAutoRefresh";
 import { effectiveOpen, enqueue, measureOffset, mergeSent, punchInstant, readOffset, readQueue, removeFromQueue, saveOffset, type PunchType, type QueuedPunch } from "./punchQueue";
 
 const RETRY_MS = 30_000;
@@ -47,6 +48,9 @@ export function usePunches(userId: string) {
   const [locked, setLocked] = useState(false);
   const [notice, setNotice] = useState<PunchNotice | null>(null);
   const flushing = useRef<Promise<void> | null>(null);
+  // Sube con cada marcaje o envío: una consulta que ya iba en camino trae el estado anterior
+  // y no debe volver a ofrecer "Marcar entrada" justo después de marcar.
+  const generation = useRef(0);
 
   const noteFailure = useCallback((e: unknown) => {
     if (e instanceof ApiError && e.status === 0) setOffline(true);
@@ -54,27 +58,34 @@ export function usePunches(userId: string) {
     else setNotice({ kind: "error", text: (e as Error).message });
   }, []);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const sentAt = Date.now();
-      const t = await api.myToday();
-      saveOffset(localStorage, measureOffset(sentAt, Date.now(), t.serverTime));
-      setToday(t);
-      saveToday(userId, t);
-      setOffline(false);
-    } catch (e) {
-      noteFailure(e);
-    } finally {
-      setLoading(false);
-    }
-  }, [userId, noteFailure]);
+  const refresh = useCallback(
+    async (background = false) => {
+      const startedAt = generation.current;
+      if (!background) setLoading(true);
+      try {
+        const sentAt = Date.now();
+        const t = await api.myToday();
+        saveOffset(localStorage, measureOffset(sentAt, Date.now(), t.serverTime));
+        setOffline(false);
+        if (startedAt !== generation.current) return;
+        setToday(t);
+        saveToday(userId, t);
+      } catch (e) {
+        // En segundo plano solo importa si se perdió la conexión; lo demás se reintenta.
+        if (!background || (e instanceof ApiError && e.status === 0)) noteFailure(e);
+      } finally {
+        if (!background) setLoading(false);
+      }
+    },
+    [userId, noteFailure],
+  );
 
   const flush = useCallback((): Promise<void> => {
     if (flushing.current) return flushing.current;
     const run = (async () => {
       const events = readQueue(localStorage, userId);
       if (!events.length) return;
+      generation.current++;
       try {
         const sentAt = Date.now();
         const { serverTime, results } = await api.syncPunches({ deviceNow: sentAt, events });
@@ -97,6 +108,7 @@ export function usePunches(userId: string) {
         else if (conflicts) setNotice({ kind: "warn", text: `${conflicts === 1 ? "Un marcaje no coincidió" : `${conflicts} marcajes no coincidieron`} con lo registrado. Quedó para que RRHH lo revise.` });
         else if (reviews) setNotice({ kind: "warn", text: "Tu marcaje se envió. RRHH revisará la hora antes de sumarla." });
         else if (deferred) setNotice({ kind: "ok", text: deferred === 1 ? "Tu marcaje guardado ya se envió." : `Tus ${deferred} marcajes guardados ya se enviaron.` });
+        generation.current++;
         await refresh();
       } catch (e) {
         noteFailure(e); // la cola queda intacta: se reintenta sin perder nada
@@ -115,25 +127,20 @@ export function usePunches(userId: string) {
 
   useEffect(() => {
     if (navigator.onLine) void sync();
-    const onOnline = () => {
-      setOffline(false);
-      void sync();
-    };
+    const onOnline = () => setOffline(false);
     const onOffline = () => setOffline(true);
-    const onVisible = () => {
-      if (document.visibilityState === "visible" && navigator.onLine) void sync();
-    };
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
-    document.addEventListener("visibilitychange", onVisible);
     // Pide al navegador no borrar la cola si le falta espacio.
     void navigator.storage?.persist?.();
     return () => {
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
-      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [sync]);
+
+  // Si hay cola la envía (y eso ya recarga); si no, solo consulta en segundo plano.
+  useAutoRefresh(() => (readQueue(localStorage, userId).length ? flush() : refresh(true)), { intervalMs: EMPLOYEE_REFRESH_MS });
 
   useEffect(() => {
     if (!queue.length) return;
@@ -146,6 +153,7 @@ export function usePunches(userId: string) {
   const punch = useCallback(
     (type: PunchType) => {
       if (locked) return;
+      generation.current++;
       setLocked(true);
       setTimeout(() => setLocked(false), PUNCH_LOCK_MS);
       const event: QueuedPunch = { clientId: crypto.randomUUID(), type, deviceTime: Date.now(), offsetMs: readOffset(localStorage) };

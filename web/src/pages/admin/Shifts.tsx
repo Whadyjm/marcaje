@@ -7,6 +7,7 @@ import { CorrectionHistory, ShiftEditor } from "../../components/ShiftEditor";
 import { Empty, ErrorBanner, Spinner, useAsync } from "../../components/ui";
 import { api, type Shift } from "../../lib/api";
 import { formatDay, formatHM, formatInstant, localTimeOf } from "../../lib/format";
+import { useAutoRefresh } from "../../lib/useAutoRefresh";
 
 type Only = "all" | "open" | "corrected";
 
@@ -26,6 +27,8 @@ export function Shifts() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const employees = useAsync(() => api.employees(), []);
   const shifts = useAsync(() => api.shifts({ ...period, employeeId: employeeId || undefined }), [period.from, period.to, employeeId]);
+
+  useAutoRefresh(shifts.refresh, { paused: !!editing });
 
   const all = shifts.data?.shifts ?? [];
   const counts = { all: all.length, open: all.filter((s) => !s.clockOut).length, corrected: all.filter((s) => s.corrections.length > 0).length };

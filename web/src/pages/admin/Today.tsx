@@ -1,10 +1,11 @@
 import { addDays } from "@domain/time.ts";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ShiftEditor } from "../../components/ShiftEditor";
 import { Empty, ErrorBanner, Spinner, useAsync } from "../../components/ui";
 import { api, type DayStatus, type DayView, type Shift } from "../../lib/api";
 import { formatDay, formatHM, formatHours, formatInstant, formatLongDay, localTimeOf } from "../../lib/format";
+import { useAutoRefresh } from "../../lib/useAutoRefresh";
 
 const STATUS: Record<DayStatus, { label: string; className: string; help: string }> = {
   dentro: { label: "Dentro", className: "st-in", help: "Tiene una entrada abierta" },
@@ -38,15 +39,11 @@ export function Today() {
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState<Editing | null>(null);
-  const { data, error, loading, reload } = useAsync(() => api.day(date), [date]);
+  const { data, error, loading, reload, refresh } = useAsync(() => api.day(date), [date]);
 
   // Refresco automático del día en curso, en pausa mientras RRHH edita.
   const isToday = !data || data.date === data.today;
-  useEffect(() => {
-    if (!isToday || editing) return;
-    const id = setInterval(reload, 30_000);
-    return () => clearInterval(id);
-  }, [isToday, editing, reload]);
+  useAutoRefresh(refresh, { paused: !isToday || !!editing });
 
   const rows = useMemo(() => {
     if (!data) return [];

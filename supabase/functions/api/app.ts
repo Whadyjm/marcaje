@@ -9,15 +9,16 @@
  *   colaborador  GET  /me/today, POST /me/punches/sync, /me/shift-changes
  *   RRHH         /admin/employees, /admin/day, /admin/shifts, /admin/review-queue,
  *                /admin/punch-conflicts, /admin/pin-requests, /admin/schedules,
- *                /admin/settings, /admin/shift-changes, /admin/report(.csv)
+ *                /admin/settings, /admin/shift-changes, /admin/decisions, /admin/report(.csv)
  */
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createClient, type PostgrestError, type SupabaseClient } from "@supabase/supabase-js";
 import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import { z } from "zod";
 import { adminOf, authenticate, employeeOf, requireRole, type AppEnv } from "./auth.ts";
 import { periodCsv } from "./domain/csv.ts";
 import { dayStatus, type DayStatus } from "./domain/day.ts";
+import { buildDecisionLog, type PinDecisionRow, type ShiftChangeDecisionRow } from "./domain/decisions.ts";
 import { resolvePunchTime } from "./domain/deferred.ts";
 import { breakdownShift, minutesToHours } from "./domain/hours.ts";
 import { EMPLOYEE_EMAIL_DOMAIN, employeeEmail, isValidCedula, normalizeCedula, normalizeCompanyCode } from "./domain/identity.ts";
@@ -165,6 +166,8 @@ const weekSchedule = z
   .refine((w) => Object.values(w).some(Boolean), "Elige al menos un día.");
 
 const SHIFT_CHANGE_MAX_DAYS = 90;
+/** Toda decisión sobre una solicitud lleva motivo: es lo que muestra la bitácora. */
+const decisionReason = z.string({ required_error: "El motivo es obligatorio." }).trim().min(3, "El motivo es obligatorio.").max(300);
 const INVALID_LOGIN = "Código de empresa, cédula o PIN incorrectos.";
 const LOCKED_LOGIN = "Tu cuenta quedó bloqueada por 5 intentos fallidos. Espera 15 minutos o pide a RRHH un PIN nuevo.";
 
@@ -796,7 +799,7 @@ export function createApp(config: AppConfig) {
     // Con PIN nuevo, se levanta cualquier bloqueo por intentos fallidos.
     await db.from("auth_attempts").delete().eq("user_id", emp.user_id);
     // Un PIN nuevo atiende cualquier solicitud pendiente de esa persona.
-    const { error: reqErr } = await db.from("pin_requests").update({ resolved_at: now().toISOString(), resolved_by: a.userId }).eq("employee_id", emp.id).is("resolved_at", null);
+    const { error: reqErr } = await db.from("pin_requests").update({ resolved_at: now().toISOString(), resolved_by: a.userId, resolved_by_name: a.name, resolution: "pin_generated" }).eq("employee_id", emp.id).is("resolved_at", null);
     if (reqErr) console.error("[reset-pin] solicitud sin cerrar:", reqErr); // el PIN ya cambió: no se reporta como fallo
     return c.json({ pin, companyCode: a.company.code });
   });
@@ -852,7 +855,7 @@ export function createApp(config: AppConfig) {
 
   admin.post("/shift-changes/:id/decide", async (c) => {
     const a = adminOf(c.get("actor"));
-    const body = parse(z.object({ approve: z.boolean(), note: z.string().trim().max(300).optional() }), await c.req.json().catch(() => ({})));
+    const body = parse(z.object({ approve: z.boolean(), note: decisionReason }), await c.req.json().catch(() => ({})));
     const today = todayInCaracas(now());
     const { data: current, error: rErr } = await db.from("shift_change_requests").select("work_date").eq("company_id", a.company.id).eq("id", c.req.param("id")).eq("status", "pending").maybeSingle();
     if (rErr) throw dbError(rErr, "cambio de turno");
@@ -861,7 +864,7 @@ export function createApp(config: AppConfig) {
 
     const { data, error } = await db
       .from("shift_change_requests")
-      .update({ status: body.approve ? "approved" : "rejected", decision_note: body.note || null, decided_by: a.userId, decided_by_name: a.name, decided_at: now().toISOString() })
+      .update({ status: body.approve ? "approved" : "rejected", decision_note: body.note, decided_by: a.userId, decided_by_name: a.name, decided_at: now().toISOString() })
       .eq("company_id", a.company.id) // aislamiento entre empresas
       .eq("id", c.req.param("id"))
       .eq("status", "pending") // dos RRHH a la vez: decide el primero
@@ -888,9 +891,10 @@ export function createApp(config: AppConfig) {
 
   admin.post("/pin-requests/:id/dismiss", async (c) => {
     const a = adminOf(c.get("actor"));
+    const { note } = parse(z.object({ note: decisionReason }), await c.req.json().catch(() => ({})));
     const { data, error } = await db
       .from("pin_requests")
-      .update({ resolved_at: now().toISOString(), resolved_by: a.userId })
+      .update({ resolved_at: now().toISOString(), resolved_by: a.userId, resolved_by_name: a.name, resolution: "dismissed", resolution_note: note })
       .eq("company_id", a.company.id) // aislamiento entre empresas
       .eq("id", c.req.param("id"))
       .is("resolved_at", null)
@@ -899,6 +903,50 @@ export function createApp(config: AppConfig) {
     if (error) throw dbError(error, "solicitud");
     if (!data) throw new HttpError(404, "Solicitud no encontrada.");
     return c.json({ ok: true });
+  });
+
+  // Bitácora de decisiones: lo decidido en el rango, de cualquier tipo.
+  admin.get("/decisions", async (c) => {
+    const a = adminOf(c.get("actor"));
+    const { from, to } = parsePeriod(c.req.query());
+    const since = startOfLocalDay(from).toISOString();
+    const until = startOfLocalDay(addDays(to, 1)).toISOString();
+
+    const fetchAll = async <T,>(page: (start: number, end: number) => PromiseLike<{ data: unknown; error: PostgrestError | null }>) => {
+      const out: T[] = [];
+      for (let offset = 0; ; offset += PAGE_SIZE) {
+        const { data, error } = await page(offset, offset + PAGE_SIZE - 1);
+        if (error) throw dbError(error, "bitácora");
+        const rows = data as T[];
+        out.push(...rows);
+        if (rows.length < PAGE_SIZE) return out;
+      }
+    };
+    const [changes, pins] = await Promise.all([
+      fetchAll<ShiftChangeDecisionRow>((s, e) =>
+        db
+          .from("shift_change_requests")
+          .select(`${SHIFT_CHANGE_COLS}, employees (name, cedula)`)
+          .eq("company_id", a.company.id)
+          .gte("decided_at", since)
+          .lt("decided_at", until)
+          .order("decided_at")
+          .order("id")
+          .range(s, e),
+      ),
+      fetchAll<PinDecisionRow>((s, e) =>
+        db
+          .from("pin_requests")
+          .select("id, created_at, resolved_at, resolution, resolution_note, resolved_by_name, employees (name, cedula)")
+          .eq("company_id", a.company.id)
+          .gte("resolved_at", since)
+          .lt("resolved_at", until)
+          .order("resolved_at")
+          .order("id")
+          .range(s, e),
+      ),
+    ]);
+    return c.json({ from, to, decisions: buildDecisionLog(changes, pins) });
   });
 
   // Vista del día

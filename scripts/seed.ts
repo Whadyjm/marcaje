@@ -218,6 +218,19 @@ async function main() {
     "cambio de turno",
   );
 
+  // Decisiones ya tomadas, para que la bitácora no aparezca vacía.
+  const decidedAt = ccs(yesterday, "15:00");
+  must(
+    await db
+      .from("shift_change_requests")
+      .insert([
+        { company_id: a.companyId, employee_id: luis, work_date: addDays(today, 3), from_start: "07:00", from_end: "19:30", to_start: "08:00", to_end: "17:00", reason: "Estudios", status: "approved", decision_note: "Hay cobertura ese día", decided_by: a.adminId, decided_by_name: COMPANIES[0].admin.name, decided_at: decidedAt },
+        { company_id: a.companyId, employee_id: carlos, work_date: addDays(today, 4), from_start: "08:00", from_end: "16:00", reason: "Asunto familiar", status: "rejected", decision_note: "No hay cobertura ese día", decided_by: a.adminId, decided_by_name: COMPANIES[0].admin.name, decided_at: decidedAt },
+      ])
+      .select("id"),
+    "decisiones de ejemplo",
+  );
+
   // María olvidó su PIN y lo solicitó desde el login.
   must(await db.from("pin_requests").insert({ company_id: a.companyId, employee_id: maria }).select("id"), "solicitud de PIN");
 

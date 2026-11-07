@@ -5,6 +5,7 @@ import { Empty, ErrorBanner, Spinner, useAsync } from "../../components/ui";
 import { api } from "../../lib/api";
 import { useAdmin } from "../../lib/auth";
 import { formatDay, formatHours } from "../../lib/format";
+import { useAutoRefresh } from "../../lib/useAutoRefresh";
 
 export function Period() {
   const admin = useAdmin();
@@ -14,7 +15,8 @@ export function Period() {
     const to = params.get("to");
     return from && to ? { from, to } : presets()[1].period; // semana anterior: lo típico al cerrar nómina
   });
-  const { data, error, loading, reload } = useAsync(() => api.report(period.from, period.to), [period.from, period.to]);
+  const { data, error, loading, reload, refresh } = useAsync(() => api.report(period.from, period.to), [period.from, period.to]);
+  useAutoRefresh(refresh);
   const [downloading, setDownloading] = useState(false);
   const [dlError, setDlError] = useState<string | null>(null);
 

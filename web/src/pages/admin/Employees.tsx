@@ -3,11 +3,13 @@ import { summarizeWeek } from "@domain/schedule.ts";
 import { PIN_REQUESTS_CHANGED } from "../../components/AdminLayout";
 import { ScheduleEditor } from "../../components/ScheduleEditor";
 import { ShiftChangeRequests } from "../../components/ShiftChangeRequests";
+import { DecisionModal } from "../../components/DecisionModal";
 import { Empty, ErrorBanner, Modal, Spinner, useAsync } from "../../components/ui";
-import { api, type Employee, type WeekSchedule } from "../../lib/api";
+import { api, type Employee, type PinRequest, type WeekSchedule } from "../../lib/api";
 import { useAdmin } from "../../lib/auth";
 import { formatInstant } from "../../lib/format";
 import { parseEmployeeList } from "../../lib/shiftForm";
+import { useAutoRefresh } from "../../lib/useAutoRefresh";
 
 interface Credentials {
   name: string;
@@ -19,13 +21,15 @@ const byName = (a: Employee, b: Employee) => a.name.localeCompare(b.name, "es");
 
 export function Employees() {
   const admin = useAdmin();
-  const { data, error, loading, reload, setData } = useAsync(() => api.employees(), []);
+  const { data, error, loading, reload, refresh: refreshEmployees, setData } = useAsync(() => api.employees(), []);
   const pins = useAsync(() => api.pinRequests(), []);
   const schedules = useAsync(() => api.schedules(), []);
+  useAutoRefresh(() => Promise.all([refreshEmployees(), pins.refresh(), schedules.refresh()]));
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [scheduling, setScheduling] = useState<{ employees: Employee[]; initial: WeekSchedule | null } | null>(null);
   const [savingTolerance, setSavingTolerance] = useState(false);
   const [pinBusy, setPinBusy] = useState<string | null>(null);
+  const [dismissing, setDismissing] = useState<PinRequest | null>(null);
   const [name, setName] = useState("");
   const [cedula, setCedula] = useState("");
   const [busy, setBusy] = useState(false);
@@ -167,11 +171,7 @@ export function Employees() {
                   <button
                     className="btn btn-ghost btn-sm"
                     disabled={pinBusy === r.id}
-                    onClick={() =>
-                      answerRequest(r.id, async () => {
-                        await api.dismissPinRequest(r.id);
-                      })
-                    }
+                    onClick={() => setDismissing(r)}
                   >
                     Descartar
                   </button>
@@ -285,6 +285,22 @@ export function Employees() {
         <label className="check small">
           <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} /> Mostrar inactivos ({inactiveCount})
         </label>
+      )}
+
+      {dismissing && (
+        <DecisionModal
+          title={`Descartar · ${dismissing.employee.name}`}
+          summary="No se generará un PIN nuevo."
+          reasons={["No reconozco la solicitud", "Ya se resolvió en persona", "Pedida por error"]}
+          confirmLabel="Descartar solicitud"
+          onClose={() => setDismissing(null)}
+          onConfirm={async (note) => {
+            await api.dismissPinRequest(dismissing.id, note);
+            setDismissing(null);
+            await pins.reload();
+            window.dispatchEvent(new Event(PIN_REQUESTS_CHANGED));
+          }}
+        />
       )}
 
       {scheduling && (
